@@ -726,16 +726,14 @@ public class NetworkedPlayerHand : NetworkBehaviour
             }
         }
 
-         // Update logic
+        // Update logic
         logicHand.AddMeldedKong(kongData);
         
-        // CREATE THE MELD RECORD
-        List<int> kongTileSortValues = new List<int> { targetValue, targetValue, targetValue, targetValue };
-        CompletedMeld meld = new CompletedMeld(InterruptActionType.Kong, kongTileSortValues, targetValue);
-        completedMelds.Add(meld);
+        // ADD Kong tiles to visual collection
+        meldedKongTiles.AddRange(tilesToMove);
         
-        // POSITION USING THE SAME METHOD AS INTERRUPT KONGS
-        PositionMeld(tilesToMove, targetValue);
+        // POSITION THE KONG TILES
+        PositionKongSet(tilesToMove);
         
         SyncGameObjectsToPlayerHand(); 
         SortHand();
@@ -745,7 +743,10 @@ public class NetworkedPlayerHand : NetworkBehaviour
         if (kongButtonUI != null) kongButtonUI.SetActive(false);
 
         // Tell server
+        List<int> kongTileSortValues = new List<int> { targetValue, targetValue, targetValue, targetValue };
         CmdDeclareKong(seatIndex, targetValue, kongTileSortValues);
+        
+        Debug.Log($"[ExecuteKong] Self-drawn Kong complete. meldedKongs count: {logicHand.MeldedKongs.Count}");
     }
 
     [Command]
@@ -775,6 +776,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
         Debug.Log($"[CheckForMahjongWin] Hand Tiles: {logicHand.HandTiles.Count}");
         Debug.Log($"[CheckForMahjongWin] Drawn Tile: {(logicHand.DrawnTile != null ? logicHand.DrawnTile.GetSortValue().ToString() : "NULL")}");
         Debug.Log($"[CheckForMahjongWin] Melded Kongs: {logicHand.MeldedKongs.Count}");
+        Debug.Log($"[CheckForMahjongWin] Completed Melds (Chi/Pon/Kong from discards): {completedMelds.Count}");
         
         // Log all tile values for debugging
         string handTilesList = string.Join(", ", logicHand.HandTiles.Select(t => t.GetSortValue()));
@@ -794,7 +796,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
             return;
         }
 
-        // Pass completed melds so they're counted in win analysis
+        // CRITICAL FIX: Pass completed melds so they're counted in win analysis
         HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
         canDeclareWin = analysis.IsWinningHand;
 
@@ -805,55 +807,6 @@ public class NetworkedPlayerHand : NetworkBehaviour
         {
             winButtonUI.SetActive(canDeclareWin);
             Debug.Log($"[CheckForMahjongWin] Win button set to: {canDeclareWin}");
-            
-            // Additional debug info
-            Debug.Log($"[CheckForMahjongWin] Win button GameObject: {winButtonUI.name}");
-            Debug.Log($"[CheckForMahjongWin] Win button active in hierarchy: {winButtonUI.activeInHierarchy}");
-            Debug.Log($"[CheckForMahjongWin] Win button activeSelf: {winButtonUI.activeSelf}");
-            
-            // Check parent Canvas
-            Canvas parentCanvas = winButtonUI.GetComponentInParent<Canvas>();
-            if (parentCanvas != null)
-            {
-                Debug.Log($"[CheckForMahjongWin] Parent Canvas found: {parentCanvas.name}, enabled: {parentCanvas.enabled}");
-                Debug.Log($"[CheckForMahjongWin] Canvas Render Mode: {parentCanvas.renderMode}");
-                
-                var canvasGraphicRaycaster = parentCanvas.GetComponent<UnityEngine.UI.GraphicRaycaster>();
-                if (canvasGraphicRaycaster != null)
-                {
-                    Debug.Log($"[CheckForMahjongWin] GraphicRaycaster found on Canvas: enabled={canvasGraphicRaycaster.enabled}");
-                }
-                else
-                {
-                    Debug.LogError($"[CheckForMahjongWin] NO GraphicRaycaster on Canvas! Button won't be clickable!");
-                }
-            }
-            else
-            {
-                Debug.LogError($"[CheckForMahjongWin] NO PARENT CANVAS FOUND!");
-            }
-            
-            // Check EventSystem
-            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
-            if (eventSystem == null)
-            {
-                Debug.LogError($"[CheckForMahjongWin] NO EVENTSYSTEM IN SCENE! Buttons won't work!");
-            }
-            else
-            {
-                Debug.Log($"[CheckForMahjongWin] EventSystem found: {eventSystem.name}, enabled: {eventSystem.enabled}");
-            }
-            
-            // Check Button component
-            var button = winButtonUI.GetComponent<UnityEngine.UI.Button>();
-            if (button != null)
-            {
-                Debug.Log($"[CheckForMahjongWin] Button component found, interactable: {button.interactable}");
-            }
-            else
-            {
-                Debug.LogError($"[CheckForMahjongWin] NO BUTTON COMPONENT! This GameObject is not a button!");
-            }
         }
         else
         {
@@ -879,11 +832,11 @@ public class NetworkedPlayerHand : NetworkBehaviour
             return;
         }
 
-        // 1. Analyze the hand
-        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze();
+        // 1. Analyze the hand WITH completed melds
+        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
         int score = logicHand.CalculateTotalScore(analysis, 1);
         
-        // 2. Get ALL tile sort values (hand + drawn + kongs) for network transmission
+        // 2. Get ALL tile sort values (hand + drawn + kongs + melds) for network transmission
         List<int> allTileSortValues = new List<int>();
         
         // Add hand tiles
@@ -903,7 +856,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
             if (data != null) allTileSortValues.Add(data.GetSortValue());
         }
         
-        // Add Kong tiles (even if hidden)
+        // Add self-declared Kong tiles
         foreach (GameObject kongTile in meldedKongTiles)
         {
             if (kongTile != null)
@@ -918,34 +871,30 @@ public class NetworkedPlayerHand : NetworkBehaviour
             }
         }
         
+        // Add completed melds (Chi/Pon/Kong from discards)
+        if (completedMelds != null)
+        {
+            foreach (var meld in completedMelds)
+            {
+                allTileSortValues.AddRange(meld.TileSortValues);
+            }
+        }
+        
         // Sort for consistent display
         allTileSortValues.Sort();
         
         Debug.Log($"[ShowResults] ===== ANALYSIS BEFORE SENDING =====");
         Debug.Log($"[ShowResults] Score: {score}");
         Debug.Log($"[ShowResults] Total tiles: {allTileSortValues.Count}");
-        Debug.Log($"[ShowResults] Tile values: {string.Join(", ", allTileSortValues)}");
-        Debug.Log($"[ShowResults] IsWinningHand: {analysis.IsWinningHand}");
-        Debug.Log($"[ShowResults] IsTraditionalWin: {analysis.IsTraditionalWin}");
-        Debug.Log($"[ShowResults] IsPureHand: {analysis.IsPureHand}");
-        Debug.Log($"[ShowResults] IsHalfHand: {analysis.IsHalfHand}");
-        Debug.Log($"[ShowResults] Is13Orphans: {analysis.Is13OrphansWin}");
-        Debug.Log($"[ShowResults] Is7Pairs: {analysis.Is7PairsWin}");
-        Debug.Log($"[ShowResults] SequencesCount: {analysis.SequencesCount}");
-        Debug.Log($"[ShowResults] TripletsCount: {analysis.TripletsCount}");
-        Debug.Log($"[ShowResults] FlowerCount: {analysis.FlowerCount}");
-        Debug.Log($"[ShowResults] TripletSortValues: {string.Join(", ", analysis.TripletSortValues)}");
+        Debug.Log($"[ShowResults] Self-declared Kongs: {logicHand.MeldedKongs.Count / 4}");
+        Debug.Log($"[ShowResults] Completed Melds: {completedMelds?.Count ?? 0}");
 
-        // 3. Show result screen locally for this player
+        // 3. Show result screen locally
         ResultScreenUI resultScreen = FindFirstObjectByType<ResultScreenUI>();
         if (resultScreen != null)
         {
             Debug.Log($"[ShowResults] Showing local result screen");
             resultScreen.ShowResult(analysis, score, seatIndex, allTileSortValues);
-        }
-        else
-        {
-            Debug.LogError($"[ShowResults] ResultScreenUI not found in scene!");
         }
 
         // 4. Merge drawn tile into hand for display
@@ -961,7 +910,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
         if (winButtonUI != null) winButtonUI.SetActive(false);
         if (kongButtonUI != null) kongButtonUI.SetActive(false);
 
-        // 6. Tell server so other players can see the win (send tile values too!)
+        // 6. Tell server
         Debug.Log($"[ShowResults] Sending to server via CmdDeclareMahjong...");
         CmdDeclareMahjong(seatIndex, analysis, score, allTileSortValues);
     }
@@ -2081,30 +2030,81 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
             return;
         }
         
-        Debug.Log($"[PlayerHand] Executing Chi: {option.tile1SortValue}, {option.tile2SortValue}, {option.discardedTile}");
+        Debug.Log($"[PlayerHand] Executing Chi with option: tile1={option.tile1SortValue}, tile2={option.tile2SortValue}, discarded={option.discardedTile}");
         
-        // Find and remove the 2 tiles from hand
+        // CRITICAL FIX: Find EXACTLY one of each tile from the ChiOption
         List<GameObject> tilesToRemove = new List<GameObject>();
+        GameObject tile1Object = null;
+        GameObject tile2Object = null;
         
+        // First pass: Find tile1
         foreach (GameObject tile in spawnedTiles)
         {
+            if (tile == null) continue;
             int sv = tile.GetComponent<TileData>().GetSortValue();
-            if ((sv == option.tile1SortValue || sv == option.tile2SortValue) && tilesToRemove.Count < 2)
+            
+            if (sv == option.tile1SortValue && tile1Object == null)
             {
-                tilesToRemove.Add(tile);
+                tile1Object = tile;
+                Debug.Log($"[ExecuteChi] Found tile1: {sv}");
+                break; // Found tile1, stop searching
             }
         }
         
-        if (tilesToRemove.Count != 2)
+        // Second pass: Find tile2 (must be different object from tile1)
+        foreach (GameObject tile in spawnedTiles)
         {
-            Debug.LogError($"[PlayerHand] Could not find tiles for Chi! Found {tilesToRemove.Count}/2");
+            if (tile == null) continue;
+            if (tile == tile1Object) continue; // Skip the tile we already selected
+            
+            int sv = tile.GetComponent<TileData>().GetSortValue();
+            
+            if (sv == option.tile2SortValue && tile2Object == null)
+            {
+                tile2Object = tile;
+                Debug.Log($"[ExecuteChi] Found tile2: {sv}");
+                break; // Found tile2, stop searching
+            }
+        }
+        
+        // Validate we found both tiles
+        if (tile1Object == null || tile2Object == null)
+        {
+            Debug.LogError($"[ExecuteChi] ERROR: Could not find required tiles!");
+            Debug.LogError($"[ExecuteChi] tile1Object ({option.tile1SortValue}): {(tile1Object != null ? "FOUND" : "NULL")}");
+            Debug.LogError($"[ExecuteChi] tile2Object ({option.tile2SortValue}): {(tile2Object != null ? "FOUND" : "NULL")}");
+            Debug.LogError($"[ExecuteChi] Hand contains: {string.Join(", ", spawnedTiles.Select(t => t.GetComponent<TileData>().GetSortValue()))}");
             return;
         }
+        
+        tilesToRemove.Add(tile1Object);
+        tilesToRemove.Add(tile2Object);
+        
+        Debug.Log($"[ExecuteChi] Successfully selected 2 tiles for Chi");
         
         // Remove from hand
         foreach (GameObject tile in tilesToRemove)
         {
             spawnedTiles.Remove(tile);
+        }
+        
+        // VALIDATION: Verify we're removing the correct tiles
+        int removedTile1 = tilesToRemove[0].GetComponent<TileData>().GetSortValue();
+        int removedTile2 = tilesToRemove[1].GetComponent<TileData>().GetSortValue();
+        
+        Debug.Log($"[ExecuteChi] Removing tiles: {removedTile1}, {removedTile2}");
+        
+        // Verify these match the ChiOption (order doesn't matter)
+        bool hasCorrectTiles = 
+            (removedTile1 == option.tile1SortValue && removedTile2 == option.tile2SortValue) ||
+            (removedTile1 == option.tile2SortValue && removedTile2 == option.tile1SortValue);
+        
+        if (!hasCorrectTiles)
+        {
+            Debug.LogError($"[ExecuteChi] CRITICAL: Tiles don't match ChiOption!");
+            Debug.LogError($"[ExecuteChi] Expected: {option.tile1SortValue}, {option.tile2SortValue}");
+            Debug.LogError($"[ExecuteChi] Got: {removedTile1}, {removedTile2}");
+            return;
         }
         
         // Create the meld INCLUDING the called tile
@@ -2378,51 +2378,46 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
     {
         List<ChiOption> options = new List<ChiOption>();
         
-        // Chi only works with numbered tiles (not honors)
-        int suit = discardedTile / 100;
-        if (suit < 1 || suit > 3) return options; // Not a numbered suit
-        
-        int value = discardedTile % 100;
-        if (value < 1 || value > 9) return options; // Invalid value
-        
-        // Try all 3 possible sequences that include the discarded tile
-        
-        // Pattern 1: discarded-1, discarded-2 (e.g., 5-6-7 where 7 is discarded)
-        if (value >= 3)
+        // Get tile counts from hand
+        Dictionary<int, int> handCounts = new Dictionary<int, int>();
+        foreach (GameObject tile in spawnedTiles)
         {
-            int tile1 = discardedTile - 2;
-            int tile2 = discardedTile - 1;
-            
-            if (HasTileInHand(tile1) && HasTileInHand(tile2))
-            {
-                options.Add(new ChiOption(discardedTile, tile1, tile2));
-            }
+            if (tile == null) continue;
+            int sortValue = tile.GetComponent<TileData>().GetSortValue();
+            if (!handCounts.ContainsKey(sortValue))
+                handCounts[sortValue] = 0;
+            handCounts[sortValue]++;
         }
         
-        // Pattern 2: discarded-1, discarded+1 (e.g., 5-6-7 where 6 is discarded)
-        if (value >= 2 && value <= 8)
+        // Can only Chi numbered tiles (not honors)
+        int suitBase = discardedTile / 100;
+        if (suitBase < 1 || suitBase > 3) return options; // Not a numbered suit
+        
+        // Pattern 1: [X-2][X-1][X] where X is discarded
+        if (handCounts.ContainsKey(discardedTile - 2) && handCounts[discardedTile - 2] > 0 &&
+            handCounts.ContainsKey(discardedTile - 1) && handCounts[discardedTile - 1] > 0)
         {
-            int tile1 = discardedTile - 1;
-            int tile2 = discardedTile + 1;
-            
-            if (HasTileInHand(tile1) && HasTileInHand(tile2))
-            {
-                options.Add(new ChiOption(discardedTile, tile1, tile2));
-            }
+            options.Add(new ChiOption(discardedTile, discardedTile - 2, discardedTile - 1));
+            Debug.Log($"[GenerateChiOptions] Option 1: {discardedTile - 2}, {discardedTile - 1}, {discardedTile}");
         }
         
-        // Pattern 3: discarded+1, discarded+2 (e.g., 5-6-7 where 5 is discarded)
-        if (value <= 7)
+        // Pattern 2: [X-1][X][X+1] where X is discarded
+        if (handCounts.ContainsKey(discardedTile - 1) && handCounts[discardedTile - 1] > 0 &&
+            handCounts.ContainsKey(discardedTile + 1) && handCounts[discardedTile + 1] > 0)
         {
-            int tile1 = discardedTile + 1;
-            int tile2 = discardedTile + 2;
-            
-            if (HasTileInHand(tile1) && HasTileInHand(tile2))
-            {
-                options.Add(new ChiOption(discardedTile, tile1, tile2));
-            }
+            options.Add(new ChiOption(discardedTile, discardedTile - 1, discardedTile + 1));
+            Debug.Log($"[GenerateChiOptions] Option 2: {discardedTile - 1}, {discardedTile}, {discardedTile + 1}");
         }
         
+        // Pattern 3: [X][X+1][X+2] where X is discarded
+        if (handCounts.ContainsKey(discardedTile + 1) && handCounts[discardedTile + 1] > 0 &&
+            handCounts.ContainsKey(discardedTile + 2) && handCounts[discardedTile + 2] > 0)
+        {
+            options.Add(new ChiOption(discardedTile, discardedTile + 1, discardedTile + 2));
+            Debug.Log($"[GenerateChiOptions] Option 3: {discardedTile}, {discardedTile + 1}, {discardedTile + 2}");
+        }
+        
+        Debug.Log($"[GenerateChiOptions] Generated {options.Count} Chi options for tile {discardedTile}");
         return options;
     }
 
@@ -3086,5 +3081,48 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         Debug.Log($"==========================================");
     }
 
-
+    /// <summary>
+    /// Draw a flower tile (immediately set it aside, don't add to hand)
+    /// </summary>
+    public void DrawFlowerTile(int flowerTileValue)
+    {
+        Debug.Log($"[PlayerHand] Drawing flower tile {flowerTileValue}");
+        
+        if (handContainer == null)
+        {
+            Debug.LogError($"[PlayerHand] No hand container!");
+            return;
+        }
+        
+        // Find the tile prefab
+        GameObject tilePrefab = FindTilePrefabBySortValue(flowerTileValue);
+        if (tilePrefab == null)
+        {
+            Debug.LogError($"[PlayerHand] No prefab found for flower {flowerTileValue}");
+            return;
+        }
+        
+        // Spawn the flower tile
+        GameObject flowerTile = Instantiate(tilePrefab, handContainer);
+        flowerTile.transform.SetParent(handContainer);
+        
+        // Disable collider so it can't be clicked
+        Collider collider = flowerTile.GetComponent<Collider>();
+        if (collider != null)
+        {
+            collider.enabled = false;
+        }
+        
+        // Add to flower tiles list
+        flowerTiles.Add(flowerTile);
+        
+        // Add to logic hand
+        TileData flowerData = CreateTileDataFromSortValue(flowerTileValue);
+        logicHand.CollectFlower(flowerData);
+        
+        // Reposition all tiles
+        RepositionTiles();
+        
+        Debug.Log($"[PlayerHand] Flower tile {flowerTileValue} set aside");
+    }
 }

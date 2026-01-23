@@ -420,6 +420,15 @@ public class NetworkedGameManager : NetworkBehaviour
         
         Debug.Log($"[RpcDrawTile] isLocalPlayer={isLocalPlayer} (local={localSeat}, target={seatIndex})");
 
+        // NEW: Check if this is a flower tile for the LOCAL player only
+        if (isLocalPlayer && IsFlowerTile(tileValue))
+        {
+            Debug.Log($"[RpcDrawTile] LOCAL player drew FLOWER {tileValue} - setting aside immediately");
+            hand.DrawFlowerTile(tileValue);
+            // Server will handle drawing replacement tile
+            return;
+        }
+
         hand.DrawTileDirect(tileValue, isLocalPlayer);
     }
     

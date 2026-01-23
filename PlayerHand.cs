@@ -636,118 +636,134 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
 
     public HandAnalysisResult CheckForWinAndAnalyze(List<CompletedMeld> completedMelds = null)
     {
-    HandAnalysisResult result = new HandAnalysisResult();
+        HandAnalysisResult result = new HandAnalysisResult();
 
-    // 1. Count ALL completed sets (Kongs + Chi/Pon/Kong from discards)
-    int meldedKongCount = meldedKongs.Count / 4;
-    int completedMeldCount = completedMelds?.Count ?? 0;
-    int totalCompletedSets = meldedKongCount + completedMeldCount;
-    int setsNeededFromHand = 4 - totalCompletedSets;
-    
-    Debug.Log($"[CheckForWinAndAnalyze] Self-declared Kongs: {meldedKongCount}, Completed Melds: {completedMeldCount}, Total: {totalCompletedSets}, Sets needed from hand: {setsNeededFromHand}");
-
-    // Create the full set of tiles currently in play
-    List<TileData> fullHand = new List<TileData>(handTiles); 
-    if (drawnTile != null) fullHand.Add(drawnTile); 
-
-    Debug.Log($"[CheckForWinAndAnalyze] Hand tiles: {handTiles.Count}");
-    Debug.Log($"[CheckForWinAndAnalyze] Drawn tile: {(drawnTile != null ? drawnTile.GetSortValue().ToString() : "NULL")}");
-    Debug.Log($"[CheckForWinAndAnalyze] Full hand size: {fullHand.Count}");
-    Debug.Log($"[CheckForWinAndAnalyze] Melded kongs count: {meldedKongs.Count}");
-
-    // --- NEW: Count Flowers before filtering ---
-    result.FlowerCount = fullHand.Count(t => 
-        t.suit == MahjongSuit.RedFlowers || t.suit == MahjongSuit.BlueFlower);
-
-    // --- Pre-Analysis Checks ---
-    result.IsPureHand = IsPureHand(completedMelds);
-    result.IsHalfHand = IsHalfHand(completedMelds);
-
-    // 2. Prepare tiles for structural analysis (Filter out Flowers)
-    fullHand.Sort((a, b) => a.GetSortValue().CompareTo(b.GetSortValue()));
-
-    Dictionary<int, int> tileCounts = fullHand
-        .Where(t => 
-            t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower) 
-        .GroupBy(t => t.GetSortValue())
-        .ToDictionary(g => g.Key, g => g.Count());
-
-    // 2b. Check Non-traditional structural wins (only if no melds)
-    if (totalCompletedSets == 0)
-    {
-        result.Is13OrphansWin = CheckFor13Orphans(tileCounts);
-        if (!result.Is13OrphansWin)
-        {
-            result.Is7PairsWin = CheckFor7Pairs(tileCounts);
-        }
-    }
-    
-    // 3. Check for traditional 4 sets and 1 pair 
-    result.IsTraditionalWin = HandChecker.CanFormRemainingSetsAndPairAndAnalyze(tileCounts, setsNeededFromHand, result);
-
-    // 3b. Finalize Traditional Win analysis (Include ALL Melds)
-    if (result.IsTraditionalWin)
-    {
-        // Add self-declared Kongs
-        result.TripletsCount += meldedKongCount; 
+        // 1. Count ALL completed sets (Self-declared Kongs + Chi/Pon/Kong from discards)
+        int meldedKongCount = meldedKongs.Count / 4;
+        int completedMeldCount = completedMelds?.Count ?? 0;
+        int totalCompletedSets = meldedKongCount + completedMeldCount;
+        int setsNeededFromHand = 4 - totalCompletedSets;
         
-        foreach (var group in meldedKongs.GroupBy(t => t.GetSortValue()))
+        Debug.Log($"[CheckForWinAndAnalyze] Self-declared Kongs: {meldedKongCount}, Completed Melds: {completedMeldCount}, Total: {totalCompletedSets}, Sets needed from hand: {setsNeededFromHand}");
+
+        // Create the full set of tiles currently in play
+        List<TileData> fullHand = new List<TileData>(handTiles); 
+        if (drawnTile != null) fullHand.Add(drawnTile); 
+
+        Debug.Log($"[CheckForWinAndAnalyze] Hand tiles: {handTiles.Count}");
+        Debug.Log($"[CheckForWinAndAnalyze] Drawn tile: {(drawnTile != null ? drawnTile.GetSortValue().ToString() : "NULL")}");
+        Debug.Log($"[CheckForWinAndAnalyze] Full hand size: {fullHand.Count}");
+        Debug.Log($"[CheckForWinAndAnalyze] Melded kongs count: {meldedKongs.Count}");
+
+        // --- NEW: Count Flowers before filtering ---
+        result.FlowerCount = fullHand.Count(t => 
+            t.suit == MahjongSuit.RedFlowers || t.suit == MahjongSuit.BlueFlower);
+
+        // --- Pre-Analysis Checks ---
+        result.IsPureHand = IsPureHand(completedMelds);
+        result.IsHalfHand = IsHalfHand(completedMelds);
+
+        // 2. Prepare tiles for structural analysis (Filter out Flowers)
+        fullHand.Sort((a, b) => a.GetSortValue().CompareTo(b.GetSortValue()));
+
+        Dictionary<int, int> tileCounts = fullHand
+            .Where(t => 
+                t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower) 
+            .GroupBy(t => t.GetSortValue())
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        // CRITICAL FIX: Validate tile count BEFORE checking special hands
+        // Expected: (sets needed * 3) + pair (2)
+        // Self-declared kongs are NOT in tileCounts (they're separate), so we don't add them here
+        int expectedConcealedTiles = (setsNeededFromHand * 3) + 2;
+        int actualConcealedTiles = tileCounts.Values.Sum();
+        
+        Debug.Log($"[CheckForWinAndAnalyze] Expected concealed tiles: {expectedConcealedTiles}");
+        Debug.Log($"[CheckForWinAndAnalyze] Actual concealed tiles: {actualConcealedTiles}");
+        
+        if (actualConcealedTiles != expectedConcealedTiles)
         {
-            if (group.Count() == 4) 
+            Debug.Log($"[CheckForWinAndAnalyze] Tile count mismatch - not a valid winning hand");
+            result.IsWinningHand = false;
+            return result;
+        }
+
+        // 2b. Check Non-traditional structural wins (only if no melds at all)
+        if (totalCompletedSets == 0)
+        {
+            result.Is13OrphansWin = CheckFor13Orphans(tileCounts);
+            if (!result.Is13OrphansWin)
             {
-                if (!result.TripletSortValues.Contains(group.Key))
-                {
-                    result.TripletSortValues.Add(group.Key);
-                }
+                result.Is7PairsWin = CheckFor7Pairs(tileCounts);
             }
         }
         
-        // ADD: Include completed melds (Chi/Pon/Kong from discards)
-        if (completedMelds != null)
+        // 3. Check for traditional 4 sets and 1 pair 
+        result.IsTraditionalWin = HandChecker.CanFormRemainingSetsAndPairAndAnalyze(tileCounts, setsNeededFromHand, result);
+
+        // 3b. Finalize Traditional Win analysis (Include ALL Melds)
+        if (result.IsTraditionalWin)
         {
-            foreach (var meld in completedMelds)
+            // Add self-declared Kongs to the analysis
+            result.TripletsCount += meldedKongCount; 
+            
+            foreach (var group in meldedKongs.GroupBy(t => t.GetSortValue()))
             {
-                Debug.Log($"[CheckForWinAndAnalyze] Adding completed meld: {meld.Type} with tile {meld.CalledTileSortValue}");
-                
-                if (meld.Type == InterruptActionType.Chi)
+                if (group.Count() == 4) 
                 {
-                    // Chi is a sequence
-                    result.SequencesCount++;
-                    // Add the root tile (lowest value in sequence)
-                    int rootValue = meld.TileSortValues.Min();
-                    if (!result.SequenceRootSortValues.Contains(rootValue))
+                    if (!result.TripletSortValues.Contains(group.Key))
                     {
-                        result.SequenceRootSortValues.Add(rootValue);
-                    }
-                }
-                else if (meld.Type == InterruptActionType.Pon || meld.Type == InterruptActionType.Kong)
-                {
-                    // Pon/Kong is a triplet
-                    result.TripletsCount++;
-                    if (!result.TripletSortValues.Contains(meld.CalledTileSortValue))
-                    {
-                        result.TripletSortValues.Add(meld.CalledTileSortValue);
+                        result.TripletSortValues.Add(group.Key);
                     }
                 }
             }
+            
+            // ADD: Include completed melds (Chi/Pon/Kong from discards)
+            if (completedMelds != null)
+            {
+                foreach (var meld in completedMelds)
+                {
+                    Debug.Log($"[CheckForWinAndAnalyze] Adding completed meld: {meld.Type} with tile {meld.CalledTileSortValue}");
+                    
+                    if (meld.Type == InterruptActionType.Chi)
+                    {
+                        // Chi is a sequence
+                        result.SequencesCount++;
+                        // Add the root tile (lowest value in sequence)
+                        int rootValue = meld.TileSortValues.Min();
+                        if (!result.SequenceRootSortValues.Contains(rootValue))
+                        {
+                            result.SequenceRootSortValues.Add(rootValue);
+                        }
+                    }
+                    else if (meld.Type == InterruptActionType.Pon || meld.Type == InterruptActionType.Kong)
+                    {
+                        // Pon/Kong is a triplet
+                        result.TripletsCount++;
+                        if (!result.TripletSortValues.Contains(meld.CalledTileSortValue))
+                        {
+                            result.TripletSortValues.Add(meld.CalledTileSortValue);
+                        }
+                    }
+                }
+            }
+            
+            LogHandComposition(result);
         }
         
-        LogHandComposition(result);
+        // 4. Final Winning Determination
+        bool isNonTraditionalPureHandWin = result.IsPureHand && 
+                                        !result.IsTraditionalWin && 
+                                        !result.Is13OrphansWin && 
+                                        !result.Is7PairsWin;
+
+        result.IsWinningHand = result.IsTraditionalWin || 
+                            result.Is13OrphansWin || 
+                            result.Is7PairsWin || 
+                            isNonTraditionalPureHandWin;
+
+        return result;
     }
-    
-    // 4. Final Winning Determination
-    bool isNonTraditionalPureHandWin = result.IsPureHand && 
-                                       !result.IsTraditionalWin && 
-                                       !result.Is13OrphansWin && 
-                                       !result.Is7PairsWin;
-
-    result.IsWinningHand = result.IsTraditionalWin || 
-                           result.Is13OrphansWin || 
-                           result.Is7PairsWin || 
-                           isNonTraditionalPureHandWin;
-
-    return result;
-}
     
     // --- HandChecker Utility Class ---
 
