@@ -794,7 +794,8 @@ public class NetworkedPlayerHand : NetworkBehaviour
             return;
         }
 
-        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze();
+        // Pass completed melds so they're counted in win analysis
+        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
         canDeclareWin = analysis.IsWinningHand;
 
         Debug.Log($"[CheckForMahjongWin] Analysis complete - IsWinningHand: {canDeclareWin}");
@@ -1159,37 +1160,38 @@ public class NetworkedPlayerHand : NetworkBehaviour
     /// </summary>
     public List<GameObject> GetAllHandTilesIncludingKongs()
     {
-        List<GameObject> allTiles = new List<GameObject>(spawnedTiles);
+        List<GameObject> allTiles = new List<GameObject>();
         
-        // Include drawn tile if it exists
-        if (drawnTile != null && !allTiles.Contains(drawnTile))
+        // Add all hand tiles
+        allTiles.AddRange(spawnedTiles);
+        
+        // Add drawn tile if present
+        if (drawnTile != null)
         {
             allTiles.Add(drawnTile);
         }
         
-        // Include all melded Kong tiles (even if they're hidden locally)
-        foreach (GameObject kongTile in meldedKongTiles)
+        // Add all Kong tiles (self-declared)
+        allTiles.AddRange(meldedKongTiles);
+        
+        // ADD: Include tiles from completed melds (Chi/Pon/Kong from discards)
+        // Note: These are stored as data, need to create visuals
+        foreach (var meld in completedMelds)
         {
-            if (kongTile != null)
+            foreach (int sortValue in meld.TileSortValues)
             {
-                // Temporarily enable if needed for reading TileData
-                bool wasActive = kongTile.activeSelf;
-                if (!wasActive) kongTile.SetActive(true);
-                
-                allTiles.Add(kongTile);
-                
-                if (!wasActive) kongTile.SetActive(false);
+                GameObject tilePrefab = FindTilePrefabBySortValue(sortValue);
+                if (tilePrefab != null)
+                {
+                    // Create a temporary visual for display
+                    GameObject tempTile = Instantiate(tilePrefab);
+                    allTiles.Add(tempTile);
+                }
             }
         }
         
-        // Sort by tile value for proper display
-        allTiles.Sort((a, b) => {
-            TileData dataA = a.GetComponent<TileData>();
-            TileData dataB = b.GetComponent<TileData>();
-            if (dataA != null && dataB != null)
-                return dataA.GetSortValue().CompareTo(dataB.GetSortValue());
-            return 0;
-        });
+        // Add flower tiles (optional, but good for display)
+        allTiles.AddRange(flowerTiles);
         
         return allTiles;
     }
@@ -1682,32 +1684,56 @@ public class NetworkedPlayerHand : NetworkBehaviour
         Debug.Log($"[PlayerHand] ===== EXECUTING RON =====");
         Debug.Log($"[PlayerHand] Ron tile: {pendingRonTile}");
         
-        // Add the Ron tile to our hand temporarily for analysis
+        // CRITICAL: DO NOT modify logicHand.DrawnTile here
+        // The hand state should already be correct for win analysis
+        
+        // Create a temporary drawn tile for analysis WITHOUT modifying the actual hand
+        TileData originalDrawn = logicHand.DrawnTile;
         TileData ronTileData = CreateTileDataFromSortValue(pendingRonTile);
+        
+        // Temporarily set the Ron tile
         logicHand.SetDrawnTile(ronTileData);
         
-        // Analyze the winning hand
-        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze();
+        // Analyze with completed melds (Chi/Pon/Kong from discards)
+        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
         
         Debug.Log($"[PlayerHand] Ron analysis - IsWinning: {analysis.IsWinningHand}");
         
         if (!analysis.IsWinningHand)
         {
             Debug.LogError($"[PlayerHand] ERROR: Ron tile does not create winning hand!");
-            logicHand.SetDrawnTile(null);
+            logicHand.SetDrawnTile(originalDrawn);
             return;
         }
         
-        // Get all tile sort values for display
+        // Get all tile sort values for display (including Chi/Pon/Kong melds)
         List<int> allTileSortValues = new List<int>();
+        
+        // Add hand tiles
         allTileSortValues.AddRange(logicHand.HandTiles.Select(t => t.GetSortValue()));
-        allTileSortValues.Add(pendingRonTile); // Add the Ron tile
+        
+        // Add Ron tile
+        allTileSortValues.Add(pendingRonTile);
+        
+        // Add melded kongs
         allTileSortValues.AddRange(logicHand.MeldedKongs.Select(t => t.GetSortValue()));
+        
+        // Add completed melds (Chi/Pon/Kong from discards)
+        if (completedMelds != null)
+        {
+            foreach (var meld in completedMelds)
+            {
+                allTileSortValues.AddRange(meld.TileSortValues);
+            }
+        }
         
         int score = logicHand.CalculateTotalScore(analysis, 1);
         
         Debug.Log($"[PlayerHand] Ron score: {score}");
         Debug.Log($"[PlayerHand] Total tiles: {allTileSortValues.Count}");
+        
+        // Restore original drawn tile
+        logicHand.SetDrawnTile(originalDrawn);
         
         // Tell server we won with Ron
         CmdDeclareRon(seatIndex, pendingRonTile, analysis, score, allTileSortValues);
@@ -1719,25 +1745,53 @@ public class NetworkedPlayerHand : NetworkBehaviour
     /// <summary>
     /// Check if we can win (Ron) with the discarded tile
     /// </summary>
+    /// <summary>
+    /// Check if we can win (Ron) with the discarded tile
+    /// </summary>
     private bool CheckRonOption(int discardedTile)
     {
-        // Create a test hand with the discarded tile
-        List<TileData> testHand = new List<TileData>(logicHand.HandTiles);
+        Debug.Log($"[CheckRonOption] ===== CHECKING RON =====");
+        Debug.Log($"[CheckRonOption] Discarded tile: {discardedTile}");
+        
+        Debug.Log($"[CheckRonOption] Hand tiles count: {logicHand.HandTiles.Count}");
+        Debug.Log($"[CheckRonOption] Hand tiles: {string.Join(", ", logicHand.HandTiles.Select(t => t.GetSortValue()))}");
+        
+        // CRITICAL FIX: Temporarily set the Ron tile as drawn tile
+        // CheckForWinAndAnalyze expects drawnTile to be set, NOT added to HandTiles
+        TileData originalDrawnTile = logicHand.DrawnTile;
         TileData discardedTileData = CreateTileDataFromSortValue(discardedTile);
-        testHand.Add(discardedTileData);
         
-        // Add melded kongs
-        testHand.AddRange(logicHand.MeldedKongs);
+        // Set as drawn tile (NOT added to HandTiles)
+        logicHand.SetDrawnTile(discardedTileData);
         
-        // Check if this creates a winning hand
-        int kongCount = logicHand.MeldedKongs.Count / 4;
-        bool canWin = logicHand.IsValidMahjongHand(testHand, kongCount);
+        // Calculate expected tile count
+        int completedMeldCount = completedMelds?.Count ?? 0;
+        int selfDeclaredKongCount = logicHand.MeldedKongs.Count / 4;
+        int setsNeededFromHand = 4 - completedMeldCount - selfDeclaredKongCount;
+        
+        Debug.Log($"[CheckRonOption] Completed melds: {completedMeldCount}");
+        Debug.Log($"[CheckRonOption] Self-declared Kongs: {selfDeclaredKongCount}");
+        Debug.Log($"[CheckRonOption] Sets needed from hand: {setsNeededFromHand}");
+        Debug.Log($"[CheckRonOption] Hand tiles: {logicHand.HandTiles.Count}");
+        Debug.Log($"[CheckRonOption] Drawn tile (Ron tile): {discardedTile}");
+        
+        // Use CheckForWinAndAnalyze which properly handles completed melds
+        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
+        bool canWin = analysis.IsWinningHand;
+        
+        // Restore original drawn tile
+        logicHand.SetDrawnTile(originalDrawnTile);
         
         if (canWin)
         {
             // Store the pending Ron tile
             pendingRonTile = discardedTile;
-            Debug.Log($"[PlayerHand] Ron available with tile {discardedTile}!");
+            Debug.Log($"[CheckRonOption] ✓✓✓ RON AVAILABLE with tile {discardedTile}!");
+            Debug.Log($"[CheckRonOption] Win type: 13Orphans={analysis.Is13OrphansWin}, 7Pairs={analysis.Is7PairsWin}, Traditional={analysis.IsTraditionalWin}, Pure={analysis.IsPureHand}");
+        }
+        else
+        {
+            Debug.Log($"[CheckRonOption] ✗ Ron NOT available - hand analysis failed");
         }
         
         return canWin;

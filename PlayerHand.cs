@@ -295,12 +295,43 @@ private bool IsSuitTile(int value)
     // FIX 3: CORE WIN CHECK METHOD MODIFICATION
     // =================================================================
 
-    private bool IsPureHand()
-{
-    // 1. Combine all tiles: concealed hand, drawn tile, and melded kongs
-    List<TileData> allTiles = new List<TileData>(handTiles);
-    if (drawnTile != null) allTiles.Add(drawnTile);
-    allTiles.AddRange(meldedKongs); 
+    private bool IsPureHand(List<CompletedMeld> completedMelds = null)
+    {
+        // 1. Combine ALL tiles: concealed hand, drawn tile, melded kongs, AND open melds
+        List<TileData> allTiles = new List<TileData>(handTiles);
+        if (drawnTile != null) allTiles.Add(drawnTile);
+        allTiles.AddRange(meldedKongs);
+    
+    // CRITICAL FIX: Include open melds (Chi/Pon/Kong from discards) in Pure Hand check
+    if (completedMelds != null)
+    {
+        foreach (var meld in completedMelds)
+        {
+            foreach (int sortValue in meld.TileSortValues)
+            {
+                TileData tileData = CreateTileDataFromSortValue(sortValue);
+                allTiles.Add(tileData);
+            }
+        }
+        Debug.Log($"[IsPureHand] Added {completedMelds.Count} open melds to purity check");
+    }
+
+    Debug.Log("--- Pure Hand Check Debug ---");
+    Debug.Log($"Total Functional Tiles (Hand + Drawn + ALL Melds): {allTiles.Count}");
+        
+        // ADD: Include tiles from completed melds (Chi/Pon/Kong from discards)
+        if (completedMelds != null)
+        {
+            foreach (var meld in completedMelds)
+            {
+                foreach (int sortValue in meld.TileSortValues)
+                {
+                    TileData tileData = CreateTileDataFromSortValue(sortValue);
+                    allTiles.Add(tileData);
+                }
+            }
+            Debug.Log($"[IsPureHand] Added {completedMelds.Count} completed melds to check");
+        }
 
     Debug.Log("--- Pure Hand Check Debug ---");
     Debug.Log($"Total Functional Tiles (Hand + Drawn + Melds): {allTiles.Count}");
@@ -355,13 +386,39 @@ private bool IsSuitTile(int value)
     // If uniqueSuits.Count > 1, it means a second numbered suit OR an Honor tile is present.
     Debug.Log($"Pure Hand Final Check: Found {uniqueSuits.Count} unique suits. Must be 1. Returning false.");
     return false;
-}
+    }
 
-    private bool IsHalfHand()
+    /// <summary>
+    /// Helper to create TileData from sort value (for checking completed melds).
+    /// </summary>
+    private TileData CreateTileDataFromSortValue(int sortValue)
     {
-        List<TileData> tilesToCheck = new List<TileData>(handTiles);
-        if (drawnTile != null) tilesToCheck.Add(drawnTile);
-        tilesToCheck.AddRange(meldedKongs); // CRITICAL FIX: Include Kongs!
+        TileData data = new TileData();
+        int suitValue = sortValue / 100;
+        int numberValue = sortValue % 100;
+        data.suit = (MahjongSuit)suitValue;
+        data.value = numberValue;
+        return data;
+    }
+
+    private bool IsHalfHand(List<CompletedMeld> completedMelds = null)
+        {
+            List<TileData> tilesToCheck = new List<TileData>(handTiles);
+            if (drawnTile != null) tilesToCheck.Add(drawnTile);
+            tilesToCheck.AddRange(meldedKongs);
+            
+            // ADD: Include tiles from completed melds
+            if (completedMelds != null)
+            {
+                foreach (var meld in completedMelds)
+                {
+                    foreach (int sortValue in meld.TileSortValues)
+                    {
+                        TileData tileData = CreateTileDataFromSortValue(sortValue);
+                        tilesToCheck.Add(tileData);
+                    }
+                }
+            }
         
         List<TileData> functionalTiles = tilesToCheck.Where(t => 
             t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower).ToList();
@@ -577,25 +634,34 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
     
     // ADDED: New method to log the composition of the winning hand
 
-    public HandAnalysisResult CheckForWinAndAnalyze()
-{
+    public HandAnalysisResult CheckForWinAndAnalyze(List<CompletedMeld> completedMelds = null)
+    {
     HandAnalysisResult result = new HandAnalysisResult();
 
-    // 1. Determine the number of sets already formed by Kongs
+    // 1. Count ALL completed sets (Kongs + Chi/Pon/Kong from discards)
     int meldedKongCount = meldedKongs.Count / 4;
-    int setsNeededFromHand = 4 - meldedKongCount;
+    int completedMeldCount = completedMelds?.Count ?? 0;
+    int totalCompletedSets = meldedKongCount + completedMeldCount;
+    int setsNeededFromHand = 4 - totalCompletedSets;
+    
+    Debug.Log($"[CheckForWinAndAnalyze] Self-declared Kongs: {meldedKongCount}, Completed Melds: {completedMeldCount}, Total: {totalCompletedSets}, Sets needed from hand: {setsNeededFromHand}");
 
     // Create the full set of tiles currently in play
     List<TileData> fullHand = new List<TileData>(handTiles); 
     if (drawnTile != null) fullHand.Add(drawnTile); 
+
+    Debug.Log($"[CheckForWinAndAnalyze] Hand tiles: {handTiles.Count}");
+    Debug.Log($"[CheckForWinAndAnalyze] Drawn tile: {(drawnTile != null ? drawnTile.GetSortValue().ToString() : "NULL")}");
+    Debug.Log($"[CheckForWinAndAnalyze] Full hand size: {fullHand.Count}");
+    Debug.Log($"[CheckForWinAndAnalyze] Melded kongs count: {meldedKongs.Count}");
 
     // --- NEW: Count Flowers before filtering ---
     result.FlowerCount = fullHand.Count(t => 
         t.suit == MahjongSuit.RedFlowers || t.suit == MahjongSuit.BlueFlower);
 
     // --- Pre-Analysis Checks ---
-    result.IsPureHand = IsPureHand();
-    result.IsHalfHand = IsHalfHand();
+    result.IsPureHand = IsPureHand(completedMelds);
+    result.IsHalfHand = IsHalfHand(completedMelds);
 
     // 2. Prepare tiles for structural analysis (Filter out Flowers)
     fullHand.Sort((a, b) => a.GetSortValue().CompareTo(b.GetSortValue()));
@@ -607,7 +673,7 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
         .ToDictionary(g => g.Key, g => g.Count());
 
     // 2b. Check Non-traditional structural wins (only if no melds)
-    if (meldedKongCount == 0)
+    if (totalCompletedSets == 0)
     {
         result.Is13OrphansWin = CheckFor13Orphans(tileCounts);
         if (!result.Is13OrphansWin)
@@ -619,9 +685,10 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
     // 3. Check for traditional 4 sets and 1 pair 
     result.IsTraditionalWin = HandChecker.CanFormRemainingSetsAndPairAndAnalyze(tileCounts, setsNeededFromHand, result);
 
-    // 3b. Finalize Traditional Win analysis (Include Melds)
+    // 3b. Finalize Traditional Win analysis (Include ALL Melds)
     if (result.IsTraditionalWin)
     {
+        // Add self-declared Kongs
         result.TripletsCount += meldedKongCount; 
         
         foreach (var group in meldedKongs.GroupBy(t => t.GetSortValue()))
@@ -634,6 +701,37 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
                 }
             }
         }
+        
+        // ADD: Include completed melds (Chi/Pon/Kong from discards)
+        if (completedMelds != null)
+        {
+            foreach (var meld in completedMelds)
+            {
+                Debug.Log($"[CheckForWinAndAnalyze] Adding completed meld: {meld.Type} with tile {meld.CalledTileSortValue}");
+                
+                if (meld.Type == InterruptActionType.Chi)
+                {
+                    // Chi is a sequence
+                    result.SequencesCount++;
+                    // Add the root tile (lowest value in sequence)
+                    int rootValue = meld.TileSortValues.Min();
+                    if (!result.SequenceRootSortValues.Contains(rootValue))
+                    {
+                        result.SequenceRootSortValues.Add(rootValue);
+                    }
+                }
+                else if (meld.Type == InterruptActionType.Pon || meld.Type == InterruptActionType.Kong)
+                {
+                    // Pon/Kong is a triplet
+                    result.TripletsCount++;
+                    if (!result.TripletSortValues.Contains(meld.CalledTileSortValue))
+                    {
+                        result.TripletSortValues.Add(meld.CalledTileSortValue);
+                    }
+                }
+            }
+        }
+        
         LogHandComposition(result);
     }
     
