@@ -1565,24 +1565,24 @@ public class NetworkedPlayerHand : NetworkBehaviour
             Debug.Log($"[PlayerHand] Kong check: {actuallyCanKong} (have {matchCount} tiles)");
         }
 
-        // Only show UI if we ACTUALLY have options
-        if (actuallyCanChi || actuallyCanPon || actuallyCanKong)
+        // CRITICAL FIX: Check Ron ALWAYS, not just when other interrupts are available
+        bool actuallyCanRon = CheckRonOption(lastDiscardedTileSortValue);
+        Debug.Log($"[PlayerHand] Ron check: {actuallyCanRon}");
+
+        // Show UI if we have ANY interrupt option (Chi/Pon/Kong/Ron)
+        if (actuallyCanChi || actuallyCanPon || actuallyCanKong || actuallyCanRon)
         {
-            Debug.Log($"[PlayerHand] ✓ Showing interrupt UI - Chi:{actuallyCanChi}, Pon:{actuallyCanPon}, Kong:{actuallyCanKong}");
+            Debug.Log($"[PlayerHand] ✓ Showing interrupt UI - Chi:{actuallyCanChi}, Pon:{actuallyCanPon}, Kong:{actuallyCanKong}, Ron:{actuallyCanRon}");
             
             if (interruptUI != null)
             {
-                // NEW: Check Ron
-                bool actuallyCanRon = CheckRonOption(lastDiscardedTileSortValue);
-                Debug.Log($"[PlayerHand] Ron check: {actuallyCanRon}");
-
                 interruptUI.ShowInterruptOptions(actuallyCanChi, actuallyCanPon, actuallyCanKong, actuallyCanRon, currentChiOptions, OnInterruptDecision);
             }
         }
         else
         {
-            // Auto-pass since we have no valid options
-            Debug.Log($"[PlayerHand] No valid interrupt options, auto-passing");
+            // Auto-pass only if we have NO valid options (including Ron)
+            Debug.Log($"[PlayerHand] No valid interrupt options (including Ron), auto-passing");
             CmdRespondToInterrupt(InterruptActionType.Pass);
         }
     }
@@ -1699,6 +1699,44 @@ public class NetworkedPlayerHand : NetworkBehaviour
     /// </summary>
     private bool CheckRonOption(int discardedTile)
     {
+        // === COMPREHENSIVE DEBUGGING ===
+        Debug.Log($"[CheckRonOption] ================================");
+        Debug.Log($"[CheckRonOption] FULL HAND ANALYSIS FOR RON");
+        Debug.Log($"[CheckRonOption] ================================");
+        
+        // Log all concealed tiles
+        var concealedTiles = logicHand.HandTiles.Select(t => t.GetSortValue()).OrderBy(v => v).ToList();
+        Debug.Log($"[CheckRonOption] Concealed tiles ({concealedTiles.Count}): {string.Join(", ", concealedTiles)}");
+        
+        // Log Ron tile
+        Debug.Log($"[CheckRonOption] Ron tile: {discardedTile}");
+        
+        // Log all completed melds
+        if (completedMelds != null && completedMelds.Count > 0)
+        {
+            Debug.Log($"[CheckRonOption] Completed melds ({completedMelds.Count}):");
+            for (int i = 0; i < completedMelds.Count; i++)
+            {
+                var meld = completedMelds[i];
+                string tiles = string.Join(", ", meld.TileSortValues);
+                Debug.Log($"[CheckRonOption]   Meld {i}: {meld.Type} - [{tiles}] (called: {meld.CalledTileSortValue})");
+            }
+        }
+        
+        // Log melded Kongs
+        if (logicHand.MeldedKongs.Count > 0)
+        {
+            var kongTiles = logicHand.MeldedKongs.Select(t => t.GetSortValue()).OrderBy(v => v).ToList();
+            Debug.Log($"[CheckRonOption] Self-declared Kongs ({logicHand.MeldedKongs.Count / 4} sets): {string.Join(", ", kongTiles)}");
+        }
+        
+        // Calculate total
+        int totalTiles = concealedTiles.Count + 1 + logicHand.MeldedKongs.Count + 
+                         (completedMelds?.Sum(m => m.TileSortValues.Count) ?? 0);
+        Debug.Log($"[CheckRonOption] Total tiles in play: {totalTiles}");
+        Debug.Log($"[CheckRonOption]   = {concealedTiles.Count} concealed + 1 Ron + {logicHand.MeldedKongs.Count} Kong + {completedMelds?.Sum(m => m.TileSortValues.Count) ?? 0} melds");
+        Debug.Log($"[CheckRonOption] ================================");
+
         Debug.Log($"[CheckRonOption] ===== CHECKING RON =====");
         Debug.Log($"[CheckRonOption] Discarded tile: {discardedTile}");
         
@@ -1725,8 +1763,28 @@ public class NetworkedPlayerHand : NetworkBehaviour
         Debug.Log($"[CheckRonOption] Drawn tile (Ron tile): {discardedTile}");
         
         // Use CheckForWinAndAnalyze which properly handles completed melds
+        Debug.Log($"[CheckRonOption] Calling CheckForWinAndAnalyze...");
+        Debug.Log($"[CheckRonOption] Hand structure:");
+        Debug.Log($"[CheckRonOption]   - Hand tiles: {logicHand.HandTiles.Count}");
+        Debug.Log($"[CheckRonOption]   - Drawn tile: {(logicHand.DrawnTile != null ? logicHand.DrawnTile.GetSortValue().ToString() : "NULL")}");
+        Debug.Log($"[CheckRonOption]   - Melded Kongs: {logicHand.MeldedKongs.Count / 4} sets");
+        Debug.Log($"[CheckRonOption]   - Completed melds: {completedMeldCount} sets");
+        
+        // Create a detailed tile list
+        List<int> allTileValues = logicHand.HandTiles.Select(t => t.GetSortValue()).ToList();
+        if (logicHand.DrawnTile != null) allTileValues.Add(logicHand.DrawnTile.GetSortValue());
+        allTileValues.Sort();
+        Debug.Log($"[CheckRonOption]   - All tiles (sorted): {string.Join(", ", allTileValues)}");
+        
         HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
         bool canWin = analysis.IsWinningHand;
+        
+        Debug.Log($"[CheckRonOption] Analysis result:");
+        Debug.Log($"[CheckRonOption]   - IsWinningHand: {canWin}");
+        Debug.Log($"[CheckRonOption]   - IsTraditionalWin: {analysis.IsTraditionalWin}");
+        Debug.Log($"[CheckRonOption]   - Is13Orphans: {analysis.Is13OrphansWin}");
+        Debug.Log($"[CheckRonOption]   - Is7Pairs: {analysis.Is7PairsWin}");
+        Debug.Log($"[CheckRonOption]   - IsPureHand: {analysis.IsPureHand}");
         
         // Restore original drawn tile
         logicHand.SetDrawnTile(originalDrawnTile);

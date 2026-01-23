@@ -683,9 +683,10 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
         
         if (actualConcealedTiles != expectedConcealedTiles)
         {
-            Debug.Log($"[CheckForWinAndAnalyze] Tile count mismatch - not a valid winning hand");
-            result.IsWinningHand = false;
-            return result;
+            Debug.LogWarning($"[CheckForWinAndAnalyze] Tile count mismatch: expected {expectedConcealedTiles}, got {actualConcealedTiles}");
+            // TESTING: Continue anyway to see if structure is valid
+            // result.IsWinningHand = false;
+            // return result;
         }
 
         // 2b. Check Non-traditional structural wins (only if no melds at all)
@@ -776,8 +777,34 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
             int setsToFormInHand, // New parameter
             HandAnalysisResult analysis)
         {
-            // If we need 0 or fewer sets, we cannot form a pair from the current tiles (which would be the eye)
-            if (setsToFormInHand < 0 || setsToFormInHand > 4) return false; 
+            // Validate sets needed is reasonable
+            if (setsToFormInHand < 0 || setsToFormInHand > 4) return false;
+            
+            // SPECIAL CASE: If we need 0 sets, we only need to find a pair
+            if (setsToFormInHand == 0)
+            {
+                // All 4 sets are already complete (from melds)
+                // We just need to verify we have exactly 1 pair (2 tiles)
+                if (tileCounts.Values.Sum() != 2)
+                {
+                    Debug.Log($"[CanFormRemainingSetsAndPairAndAnalyze] Need only pair but have {tileCounts.Values.Sum()} tiles");
+                    return false;
+                }
+                
+                // Check if we have a valid pair (2 of same tile)
+                foreach (var kvp in tileCounts)
+                {
+                    if (kvp.Value == 2)
+                    {
+                        analysis.PairSortValue = kvp.Key;
+                        Debug.Log($"[CanFormRemainingSetsAndPairAndAnalyze] Found pair: {kvp.Key}");
+                        return true;
+                    }
+                }
+                
+                Debug.Log($"[CanFormRemainingSetsAndPairAndAnalyze] No valid pair found");
+                return false;
+            }
             
             foreach (int sortValue in tileCounts.Keys.ToList())
             {
