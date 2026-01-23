@@ -1037,8 +1037,38 @@ public class NetworkedGameManager : NetworkBehaviour
         // Tell the interrupting player to execute locally
         hand.TargetExecuteInterrupt(player.connectionToClient, action, lastDiscardedTile);
         
+        // NEW: If Kong from discard, draw a replacement tile
+        if (action == InterruptActionType.Kong)
+        {
+            Debug.Log($"[GameManager] Kong from discard - drawing replacement tile");
+            
+            if (wallTiles.Count > 0)
+            {
+                int replacementTile = DrawTileFromWall();
+                
+                // Check if it's a flower
+                while (IsFlowerTile(replacementTile) && wallTiles.Count > 0)
+                {
+                    Debug.Log($"[GameManager] Drew flower {replacementTile}, showing and replacing");
+                    RpcShowFlowerTile(interruptingPlayer, replacementTile);
+                    replacementTile = DrawTileFromWall();
+                }
+                
+                Debug.Log($"[GameManager] Sending replacement tile {replacementTile} to Player {interruptingPlayer}");
+                RpcDrawTile(interruptingPlayer, replacementTile);
+            }
+            else
+            {
+                Debug.LogWarning($"[GameManager] No tiles left in wall for Kong replacement");
+            }
+        }
+        
         // Give turn to interrupting player
         currentPlayerIndex = interruptingPlayer;
+        
+        // NOTE: Don't call StartPlayerTurn here - player needs to discard first
+        // For Pon/Chi, they just discard
+        // For Kong, they draw (above) then discard
     }
 
     [Server]
