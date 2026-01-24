@@ -43,6 +43,8 @@ public class NetworkedPlayerHand : NetworkBehaviour
     private List<GameObject> flowerTiles = new List<GameObject>();
     private List<GameObject> meldedKongTiles = new List<GameObject>();
 
+    private List<int> localMeldSizes = new List<int>();
+
     private int seatIndex = -1;
     private Transform handContainer;
     private bool canDeclareWin = false;
@@ -735,6 +737,10 @@ public class NetworkedPlayerHand : NetworkBehaviour
         // POSITION THE KONG TILES
         PositionKongSet(tilesToMove);
         
+        // NEW: Track self-Kong size for future meld positioning
+        localMeldSizes.Add(4);
+        Debug.Log($"[ExecuteKong] Tracked self-Kong (size 4). Total melds: {localMeldSizes.Count}");
+        
         SyncGameObjectsToPlayerHand(); 
         SortHand();
 
@@ -1028,11 +1034,15 @@ public class NetworkedPlayerHand : NetworkBehaviour
     /// </summary>
     private void PositionKongSet(List<GameObject> kongTiles)
     {
-        if (kongTiles.Count != 4) return;
-
+        if (kongTiles.Count != 4)
+        {
+            Debug.LogWarning($"[PositionKongSet] Expected 4 tiles, got {kongTiles.Count}");
+            return;
+        }
+        
         Debug.Log($"[PositionKongSet] Positioning self-Kong for seat {seatIndex}");
         
-        // Find our KongArea
+        // CRITICAL FIX: Use same container and positioning logic as PositionMeld
         string containerName = $"KongArea_Seat{seatIndex}";
         GameObject containerObj = GameObject.Find(containerName);
         
@@ -1047,25 +1057,27 @@ public class NetworkedPlayerHand : NetworkBehaviour
         float setSpacing = 0.05f;
         float tileSpacing = 0.12f;
         
-        // ===== FIX: Rotation based on seat =====
+        // Rotation based on seat
         Quaternion tileRotation = (seatIndex == 0) ? 
-        Quaternion.identity : 
-        Quaternion.Euler(0f, 180f, 0f);
+            Quaternion.identity : 
+            Quaternion.Euler(0f, 180f, 0f);
         
-        // ===== FIX: Direction multiplier =====
+        // Direction based on seat
         float directionMultiplier = (seatIndex == 0) ? 1f : -1f;
         
-        // Calculate start X based on existing melds
+        // Calculate starting X using existing melds
+        // NOTE: localMeldSizes doesn't include THIS Kong yet (added after positioning)
         float meldStartX = 0f;
-        for (int i = 0; i < completedMelds.Count; i++)
+        for (int i = 0; i < localMeldSizes.Count; i++)
         {
-            int previousMeldSize = completedMelds[i].TileSortValues.Count;
+            int previousMeldSize = localMeldSizes[i];
             meldStartX += directionMultiplier * ((previousMeldSize * tileSpacing) + setSpacing);
+            Debug.Log($"[PositionKongSet]   Previous meld {i}: {previousMeldSize} tiles, cumulative X: {meldStartX}");
         }
         
-        Debug.Log($"[PositionKongSet] Start X: {meldStartX}, Direction: {directionMultiplier}");
+        Debug.Log($"[PositionKongSet] Kong start X: {meldStartX}");
         
-        // Position Kong tiles
+        // Position each Kong tile
         for (int i = 0; i < 4; i++)
         {
             float xPos = meldStartX + (directionMultiplier * i * tileSpacing);
@@ -1074,8 +1086,13 @@ public class NetworkedPlayerHand : NetworkBehaviour
             kongTiles[i].transform.localPosition = new Vector3(xPos, 0f, 0f);
             kongTiles[i].transform.localRotation = tileRotation;
             
-            Debug.Log($"[PositionKongSet]   Kong tile {i} at X: {xPos}");
+            Collider collider = kongTiles[i].GetComponent<Collider>();
+            if (collider != null) collider.enabled = false;
+            
+            Debug.Log($"[PositionKongSet]   Tile {i} at local X: {xPos}");
         }
+        
+        Debug.Log($"[PositionKongSet] ✓ Kong positioned with {localMeldSizes.Count} previous melds");
     }
     
     /// <summary>
@@ -2212,9 +2229,6 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         
         Debug.Log($"[PlayerHand] Positioning meld in {containerName}");
         
-        // Calculate meld index
-        int meldIndex = completedMelds.Count - 1;
-        
         float setSpacing = 0.05f;
         float tileSpacing = 0.12f;
         
@@ -2230,16 +2244,17 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         // Players 1, 2, 3: tiles go in NEGATIVE direction (-1)
         float directionMultiplier = (seatIndex == 0) ? 1f : -1f;
         
-        // Calculate starting X position
+        // CRITICAL FIX: Calculate starting X using ALL meld sizes (including self-Kongs)
         float meldStartX = 0f;
-        for (int i = 0; i < meldIndex; i++)
+        for (int i = 0; i < localMeldSizes.Count; i++)
         {
-            int previousMeldSize = completedMelds[i].TileSortValues.Count;
+            int previousMeldSize = localMeldSizes[i];
             // Apply direction to spacing
             meldStartX += directionMultiplier * ((previousMeldSize * tileSpacing) + setSpacing);
+            Debug.Log($"[PlayerHand]   Previous meld {i}: {previousMeldSize} tiles, cumulative X: {meldStartX}");
         }
         
-        Debug.Log($"[PlayerHand] Meld index: {meldIndex}, Start X: {meldStartX}, Direction: {directionMultiplier}");
+        Debug.Log($"[PlayerHand] Total existing melds: {localMeldSizes.Count}, Start X: {meldStartX}, Direction: {directionMultiplier}");
         
         // Position tiles with direction multiplier
         for (int i = 0; i < meldTiles.Count; i++)
@@ -2257,7 +2272,9 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
             Debug.Log($"[PlayerHand]   Tile {i} at local X: {xPos}");
         }
         
-        Debug.Log($"[PlayerHand] ✓ Positioned {meldTiles.Count} tiles");
+        // NEW: Track this meld's size
+        localMeldSizes.Add(meldTiles.Count);
+        Debug.Log($"[PlayerHand] ✓ Positioned {meldTiles.Count} tiles. Total melds tracked: {localMeldSizes.Count}");
     }
 
     /// <summary>
@@ -2863,8 +2880,7 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
 
         // ===== DIRECTION =====
         // FIXED: Use -1f for left-to-right (was +1f for right-to-left)
-        float directionMultiplier = -1f;
-
+        float directionMultiplier = (opponentSeatIndex == 0) ? 1f : -1f;
         // Calculate start X based on existing melds
         float meldStartX = 0f;
         for (int i = 0; i < existingMeldSizes.Count; i++)
