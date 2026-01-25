@@ -447,12 +447,33 @@ public void ShowResults()
     if (kongButtonUI != null) kongButtonUI.SetActive(false);
     
     // 6. Calculate Final Score using the analysis object we just created
-    int finalScore = playerHand.CalculateTotalScore(currentHandAnalysis, startingScore: 1);
+    // Note: TileManager is single-player, so we assume Tsumo and count local Kongs
+    int playerSeat = 0; // Default to seat 0 in single-player
+    bool isTsumo = true; // Always Tsumo in single-player
+    
+    // Count self-drawn Kongs
+    int selfKongCount = meldedKongSets.Count / 4; // Each Kong is 4 tiles
+    int discardKongCount = 0; // No discard Kongs in single-player
+    
+    List<string> flowerMessages;
+    int completedMeldCount = 0; // No Chi/Pon/Kong from discards in single-player
+    int finalScore = playerHand.CalculateTotalScore(
+        currentHandAnalysis, 
+        playerSeat, 
+        isTsumo, 
+        selfKongCount, 
+        discardKongCount, 
+        completedMeldCount,
+        out flowerMessages, 
+        startingScore: 1
+    );
+    
+    Debug.Log($"[TileManager] Final score: {finalScore}, Flower messages: {flowerMessages?.Count ?? 0}");
 
-    // 7. Display Results
+    // 7. Display Results with flower messages
     if (resultScreenUI != null)
     {
-        resultScreenUI.ShowResult(currentHandAnalysis, finalScore);
+        resultScreenUI.ShowResult(currentHandAnalysis, finalScore, winnerSeatIndex: 0, winningTileSortValues: null, flowerMessages: flowerMessages);
     }
     else
     {
@@ -728,8 +749,9 @@ public void ShowResults()
         }
         else if (sortedHandSize > 0)
         {
-            // If drawnTile is null, use the last sorted tile's X as the boundary
-            endOfHandX = endOfHandX;
+            // If drawnTile is null, endOfHandX already set to last sorted tile
+            // (calculated above as: startX + (sortedHandSize - 1) * spacing)
+            // No change needed - endOfHandX is already correct
         }
         else
         {

@@ -804,10 +804,43 @@ public class NetworkedPlayerHand : NetworkBehaviour
 
         // CRITICAL FIX: Pass completed melds so they're counted in win analysis
         HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
-        canDeclareWin = analysis.IsWinningHand;
+        bool hasWinningStructure = analysis.IsWinningHand;
 
-        Debug.Log($"[CheckForMahjongWin] Analysis complete - IsWinningHand: {canDeclareWin}");
+        Debug.Log($"[CheckForMahjongWin] Analysis complete - IsWinningHand: {hasWinningStructure}");
         Debug.Log($"[CheckForMahjongWin] Is13Orphans: {analysis.Is13OrphansWin}, Is7Pairs: {analysis.Is7PairsWin}, IsTraditional: {analysis.IsTraditionalWin}, IsPure: {analysis.IsPureHand}");
+
+        // CRITICAL: Check if score would be > 0 after all bonuses
+        if (hasWinningStructure)
+        {
+            // Calculate Kong counts
+            int selfKongCount = logicHand.MeldedKongs.Count / 4;
+            int discardKongCount = 0;
+            if (completedMelds != null)
+            {
+                discardKongCount = completedMelds.Count(m => m.Type == InterruptActionType.Kong);
+            }
+            
+            List<string> flowerMessages;
+            bool isTsumo = true; // Tsumo check
+            int completedMeldCount = completedMelds?.Count ?? 0;
+            int finalScore = logicHand.CalculateTotalScore(analysis, seatIndex, isTsumo, selfKongCount, discardKongCount, completedMeldCount, out flowerMessages, 1);
+            canDeclareWin = finalScore > 0;
+            
+            Debug.Log($"[CheckForMahjongWin] Final score: {finalScore}, Can declare win: {canDeclareWin}");
+            if (flowerMessages.Count > 0)
+            {
+                Debug.Log($"[CheckForMahjongWin] Flower messages: {string.Join("; ", flowerMessages)}");
+            }
+            
+            if (!canDeclareWin)
+            {
+                Debug.Log($"[CheckForMahjongWin] Win BLOCKED - score is {finalScore} (must be > 0)");
+            }
+        }
+        else
+        {
+            canDeclareWin = false;
+        }
 
         if (winButtonUI != null)
         {
@@ -838,9 +871,24 @@ public class NetworkedPlayerHand : NetworkBehaviour
             return;
         }
 
-        // 1. Analyze the hand WITH completed melds
+        // 1. Analyze the hand WITH completed melds and calculate score
         HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
-        int score = logicHand.CalculateTotalScore(analysis, 1);
+        
+        // Calculate Kong counts
+        int selfKongCount = logicHand.MeldedKongs.Count / 4;
+        int discardKongCount = 0;
+        if (completedMelds != null)
+        {
+            discardKongCount = completedMelds.Count(m => m.Type == InterruptActionType.Kong);
+        }
+        
+        Debug.Log($"[ShowResults] Self-Kongs: {selfKongCount}, Discard-Kongs: {discardKongCount}");
+        
+        // Calculate score with Tsumo bonus and Kong bonuses
+        List<string> flowerMessages;
+        bool isTsumo = true; // This is always Tsumo (self-drawn win)
+        int completedMeldCount = completedMelds?.Count ?? 0;
+        int score = logicHand.CalculateTotalScore(analysis, seatIndex, isTsumo, selfKongCount, discardKongCount, completedMeldCount, out flowerMessages, 1);
         
         // 2. Get ALL tile sort values (hand + drawn + kongs + melds) for network transmission
         List<int> allTileSortValues = new List<int>();
@@ -918,17 +966,17 @@ public class NetworkedPlayerHand : NetworkBehaviour
 
         // 6. Tell server
         Debug.Log($"[ShowResults] Sending to server via CmdDeclareMahjong...");
-        CmdDeclareMahjong(seatIndex, analysis, score, allTileSortValues);
+        // Pass both tile values (for display) AND flower messages (for scoring breakdown)
+        // (allTileSortValues already created earlier in this method around line 870)
+        CmdDeclareMahjong(seatIndex, analysis, score, allTileSortValues, flowerMessages);
     }
 
     [Command]
-    private void CmdDeclareMahjong(int playerIndex, HandAnalysisResult analysis, int score, List<int> tileSortValues)
+    private void CmdDeclareMahjong(int playerIndex, HandAnalysisResult analysis, int score, List<int> tileSortValues, List<string> flowerMessages)
     {
         Debug.Log($"[CmdDeclareMahjong] SERVER RECEIVED:");
         Debug.Log($"  Player Index: {playerIndex}");
         Debug.Log($"  Score: {score}");
-        Debug.Log($"  Tile count: {tileSortValues.Count}");
-        Debug.Log($"  Tiles: {string.Join(", ", tileSortValues)}");
         Debug.Log($"  IsWinningHand: {analysis.IsWinningHand}");
         Debug.Log($"  IsTraditionalWin: {analysis.IsTraditionalWin}");
         Debug.Log($"  IsPureHand: {analysis.IsPureHand}");
@@ -939,10 +987,12 @@ public class NetworkedPlayerHand : NetworkBehaviour
         Debug.Log($"  TripletsCount: {analysis.TripletsCount}");
         Debug.Log($"  FlowerCount: {analysis.FlowerCount}");
         Debug.Log($"  TripletSortValues count: {analysis.TripletSortValues?.Count ?? 0}");
+        Debug.Log($"  Tile sort values count: {tileSortValues?.Count ?? 0}");
+        Debug.Log($"  Flower messages count: {flowerMessages?.Count ?? 0}");
         
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkedGameManager.Instance.PlayerDeclaredMahjong(playerIndex, analysis, score, tileSortValues);
+            NetworkedGameManager.Instance.PlayerDeclaredMahjong(playerIndex, analysis, score, tileSortValues, flowerMessages);
         }
     }
 
@@ -1504,8 +1554,21 @@ public class NetworkedPlayerHand : NetworkBehaviour
         logicHand.SetDrawnTile(candidate);
         
         // Analyze and score
-        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze();
-        int score = logicHand.CalculateTotalScore(analysis, 1);
+        HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
+        
+        // Calculate Kong counts for accurate scoring
+        int selfKongCount = logicHand.MeldedKongs.Count / 4;
+        int discardKongCount = 0;
+        if (completedMelds != null)
+        {
+            discardKongCount = completedMelds.Count(m => m.Type == InterruptActionType.Kong);
+        }
+        
+        // Calculate score (assume Tsumo for potential score display)
+        List<string> unusedMessages;
+        bool isTsumo = true; // Assume Tsumo for potential score
+        int completedMeldCount = completedMelds?.Count ?? 0;
+        int score = logicHand.CalculateTotalScore(analysis, seatIndex, isTsumo, selfKongCount, discardKongCount, completedMeldCount, out unusedMessages, 1);
         
         // Restore original drawn tile
         logicHand.SetDrawnTile(originalDrawn);
@@ -1693,16 +1756,31 @@ public class NetworkedPlayerHand : NetworkBehaviour
             }
         }
         
-        int score = logicHand.CalculateTotalScore(analysis, 1);
+        // Calculate Kong counts
+        int selfKongCount = logicHand.MeldedKongs.Count / 4;
+        int discardKongCount = 0;
+        if (completedMelds != null)
+        {
+            discardKongCount = completedMelds.Count(m => m.Type == InterruptActionType.Kong);
+        }
         
+        Debug.Log($"[Ron] Self-Kongs: {selfKongCount}, Discard-Kongs: {discardKongCount}");
+        
+        
+        // Calculate score with Ron (no Tsumo bonus) and Kong bonuses
+        List<string> flowerMessages;
+        bool isTsumo = false; // This is Ron (win on discard)
+        int completedMeldCount = completedMelds?.Count ?? 0;
+        int score = logicHand.CalculateTotalScore(analysis, seatIndex, isTsumo, selfKongCount, discardKongCount, completedMeldCount, out flowerMessages, 1);
         Debug.Log($"[PlayerHand] Ron score: {score}");
         Debug.Log($"[PlayerHand] Total tiles: {allTileSortValues.Count}");
+        Debug.Log($"[PlayerHand] Flower messages count: {flowerMessages?.Count ?? 0}");
         
         // Restore original drawn tile
         logicHand.SetDrawnTile(originalDrawn);
         
         // Tell server we won with Ron
-        CmdDeclareRon(seatIndex, pendingRonTile, analysis, score, allTileSortValues);
+        CmdDeclareRon(seatIndex, pendingRonTile, analysis, score, allTileSortValues, flowerMessages);
         
         // Clear the pending Ron tile
         pendingRonTile = -1;
@@ -1808,17 +1886,41 @@ public class NetworkedPlayerHand : NetworkBehaviour
         
         if (canWin)
         {
-            // Store the pending Ron tile
-            pendingRonTile = discardedTile;
-            Debug.Log($"[CheckRonOption] ✓✓✓ RON AVAILABLE with tile {discardedTile}!");
-            Debug.Log($"[CheckRonOption] Win type: 13Orphans={analysis.Is13OrphansWin}, 7Pairs={analysis.Is7PairsWin}, Traditional={analysis.IsTraditionalWin}, Pure={analysis.IsPureHand}");
+            // CRITICAL: Check if score would be > 0 after all bonuses
+            // Calculate Kong counts
+            int selfKongCount = logicHand.MeldedKongs.Count / 4;
+            int discardKongCount = 0;
+            if (completedMelds != null)
+            {
+                discardKongCount = completedMelds.Count(m => m.Type == InterruptActionType.Kong);
+            }
+            
+            List<string> flowerMessages;
+            bool isTsumo = false; // Ron check (no Tsumo bonus)
+            // NOTE: completedMeldCount already declared at line 1850, reuse it
+            int finalScore = logicHand.CalculateTotalScore(analysis, seatIndex, isTsumo, selfKongCount, discardKongCount, completedMeldCount, out flowerMessages, 1);
+            
+            if (finalScore > 0)
+            {
+                // Store the pending Ron tile
+                pendingRonTile = discardedTile;
+                Debug.Log($"[CheckRonOption] ✓✓✓ RON AVAILABLE with tile {discardedTile}! Score: {finalScore}");
+                Debug.Log($"[CheckRonOption] Win type: 13Orphans={analysis.Is13OrphansWin}, 7Pairs={analysis.Is7PairsWin}, Traditional={analysis.IsTraditionalWin}, Pure={analysis.IsPureHand}");
+                Debug.Log($"[CheckRonOption] Flower messages: {string.Join("; ", flowerMessages)}");
+                return true;
+            }
+            else
+            {
+                Debug.Log($"[CheckRonOption] ✗ Ron BLOCKED - score would be {finalScore} (must be > 0)");
+                Debug.Log($"[CheckRonOption] Flower messages: {string.Join("; ", flowerMessages)}");
+                return false;
+            }
         }
         else
         {
             Debug.Log($"[CheckRonOption] ✗ Ron NOT available - hand analysis failed");
+            return false;
         }
-        
-        return canWin;
     }
 
     [Command]
@@ -1961,13 +2063,14 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
     }
 
     [Command]
-    private void CmdDeclareRon(int playerIndex, int ronTile, HandAnalysisResult analysis, int score, List<int> tileSortValues)
+    private void CmdDeclareRon(int playerIndex, int ronTile, HandAnalysisResult analysis, int score, List<int> tileSortValues, List<string> flowerMessages)
     {
         Debug.Log($"[Server] CmdDeclareRon - Player {playerIndex}, Tile {ronTile}, Score {score}");
+        Debug.Log($"[Server] Flower messages count: {flowerMessages?.Count ?? 0}");
         
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkedGameManager.Instance.PlayerDeclaredRon(playerIndex, ronTile, analysis, score, tileSortValues);
+            NetworkedGameManager.Instance.PlayerDeclaredRon(playerIndex, ronTile, analysis, score, tileSortValues, flowerMessages);
         }
     }
 

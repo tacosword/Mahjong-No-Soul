@@ -19,11 +19,15 @@ public class HandAnalysisResult
     public bool Is7PairsWin = false;
 
     // --- Hand Attributes ---
-    public bool IsPureHand = false;
-    public bool IsHalfHand = false;
+    public bool IsPureHand { get; set; } = false; 
+    public bool IsHalfHand { get; set; } = false;
 
-    // --- Bonus Tile Tracking ---
-    public int FlowerCount = 0;
+    // --- NEW: Win Condition Bonuses ---
+    public bool IsAllHidden { get; set; } = false; // All tiles self-drawn (Menzen Tsumo)
+    public bool IsAllShown { get; set; } = false;  // All tiles from melds (Toitoi Hoitei)
+
+    // --- NEW: Bonus Tile Tracking ---
+    public int FlowerCount { get; set; } = 0; // Added for ResultScreenUI
 
     // --- Traditional Win Decomposition Details ---
     public int SequencesCount = 0;

@@ -48,7 +48,7 @@ public class ResultScreenUI : MonoBehaviour
     /// <param name="totalScore">Total score</param>
     /// <param name="winnerSeatIndex">Seat index of the winner</param>
     /// <param name="winningTileSortValues">The actual tile sort values to display</param>
-    public void ShowResult(HandAnalysisResult analysis, int totalScore, int winnerSeatIndex = -1, List<int> winningTileSortValues = null)
+    public void ShowResult(HandAnalysisResult analysis, int totalScore, int winnerSeatIndex = -1, List<int> winningTileSortValues = null, List<string> flowerMessages = null)
     {
         Debug.Log($"[ResultScreen] ===== ShowResult called =====");
         Debug.Log($"[ResultScreen] Score: {totalScore}, IsWinning: {analysis.IsWinningHand}");
@@ -83,7 +83,7 @@ public class ResultScreenUI : MonoBehaviour
         }
 
         // Build score details
-        string details = BuildScoreDetails(analysis);
+        string details = BuildScoreDetails(analysis, flowerMessages);
         Debug.Log($"[ResultScreen] Score details built: {details.Length} characters");
         Debug.Log($"[ResultScreen] Score details content:\n{details}");
 
@@ -126,7 +126,7 @@ public class ResultScreenUI : MonoBehaviour
     /// <summary>
     /// Build the score breakdown text.
     /// </summary>
-    private string BuildScoreDetails(HandAnalysisResult analysis)
+    private string BuildScoreDetails(HandAnalysisResult analysis, List<string> flowerMessages = null)
     {
         Debug.Log("[BuildScoreDetails] Starting score breakdown...");
         Debug.Log($"[BuildScoreDetails] IsPureHand: {analysis.IsPureHand}");
@@ -139,6 +139,58 @@ public class ResultScreenUI : MonoBehaviour
         Debug.Log($"[BuildScoreDetails] FlowerCount: {analysis.FlowerCount}");
         
         string details = "Base Win: +1\n";
+        
+        // === WIN TYPE & KONG BONUSES (Display these first) ===
+        if (flowerMessages != null && flowerMessages.Count > 0)
+        {
+            // Separate messages by category
+            List<string> winTypeMessages = new List<string>();
+            List<string> kongMessages = new List<string>();
+            List<string> flowerOnlyMessages = new List<string>();
+            
+            foreach (string msg in flowerMessages)
+            {
+                if (msg.Contains("Tsumo"))
+                {
+                    winTypeMessages.Add(msg);
+                }
+                else if (msg.Contains("Kong"))
+                {
+                    kongMessages.Add(msg);
+                }
+                else
+                {
+                    flowerOnlyMessages.Add(msg);
+                }
+            }
+            
+            // Add win type bonuses first
+            foreach (string msg in winTypeMessages)
+            {
+                details += $"{msg}\n";
+            }
+            
+            // Add Kong bonuses
+            foreach (string msg in kongMessages)
+            {
+                details += $"{msg}\n";
+            }
+            
+            // Add flower bonuses last (before hand composition bonuses)
+            if (flowerOnlyMessages.Count > 0)
+            {
+                foreach (string msg in flowerOnlyMessages)
+                {
+                    details += $"{msg}\n";
+                }
+            }
+            
+            // Add spacing
+            if (flowerMessages.Count > 0)
+            {
+                details += "\n";
+            }
+        }
 
         // Non-Traditional Pure Hand
         if (analysis.IsPureHand && !analysis.IsTraditionalWin)

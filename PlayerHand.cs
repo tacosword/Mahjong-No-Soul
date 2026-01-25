@@ -527,19 +527,108 @@ private bool CheckFor13Orphans(Dictionary<int, int> tileCounts)
         // you would adjust the logic here. This implementation assumes the standard 7 distinct pairs.
     }
 
-public int CalculateFlowerScore(int startingScore = 1)
+    /// <summary>
+    /// Calculate flower score based on comprehensive rules.
+    /// </summary>
+    /// <param name="startingScore">Base score before flower bonuses</param>
+    /// <param name="playerSeat">Player's seat (0-3) to determine their flower number</param>
+    /// <param name="flowerMessages">Output list of flower bonus messages for result screen</param>
+    /// <returns>Score after flower bonuses/penalties</returns>
+    public int CalculateFlowerScore(int startingScore, int playerSeat, out List<string> flowerMessages)
     {
+        flowerMessages = new List<string>();
         int currentScore = startingScore;
-        List<int> flowerValues = FlowerTiles.Where(tile => tile != null).Select(tile => tile.value).ToList();
-        if (flowerValues.Count == 0) return startingScore;
         
-        bool hasFlowerOne = flowerValues.Contains(1);
-        bool hasNonFlowerOne = flowerValues.Any(v => v != 1); 
-        
-        if (hasNonFlowerOne && !hasFlowerOne)
+        if (FlowerTiles.Count == 0) 
         {
-            currentScore -= 1;
+            return startingScore;
         }
+        
+        // Determine player's flower number (1-4 based on seat 0-3)
+        int ownFlowerNumber = playerSeat + 1;
+        
+        Debug.Log($"[FlowerScore] Player seat {playerSeat}, own flower: {ownFlowerNumber}");
+        Debug.Log($"[FlowerScore] Total flowers: {FlowerTiles.Count}");
+        
+        // Group flowers by suit (Red=7, Blue=6) and value (1-4)
+        var flowersByValue = FlowerTiles
+            .GroupBy(t => t.value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        
+        var redFlowers = FlowerTiles.Where(t => t.suit == MahjongSuit.RedFlowers).ToList();
+        var blueFlowers = FlowerTiles.Where(t => t.suit == MahjongSuit.BlueFlower).ToList();
+        
+        Debug.Log($"[FlowerScore] Red flowers: {redFlowers.Count}, Blue flowers: {blueFlowers.Count}");
+        
+        // Check if player has their own flower number
+        bool hasOwnFlower = flowersByValue.ContainsKey(ownFlowerNumber);
+        int ownFlowerCount = hasOwnFlower ? flowersByValue[ownFlowerNumber].Count : 0;
+        
+        Debug.Log($"[FlowerScore] Has own flower ({ownFlowerNumber}): {hasOwnFlower}, Count: {ownFlowerCount}");
+        
+        // === RULE 1 & 2: Wrong Flower Penalty (unless protected by own flower) ===
+        if (!hasOwnFlower)
+        {
+            // Count all non-matching flowers
+            int wrongFlowerCount = FlowerTiles.Count(t => t.value != ownFlowerNumber);
+            if (wrongFlowerCount > 0)
+            {
+                // FIXED: Always -1 regardless of how many wrong flowers
+                currentScore -= 1;
+                flowerMessages.Add($"Wrong Flowers ({wrongFlowerCount}): -1 point");
+                Debug.Log($"[FlowerScore] Wrong flower penalty: -1 (had {wrongFlowerCount} wrong flowers, no protection)");
+            }
+        }
+        else
+        {
+            Debug.Log($"[FlowerScore] Has own flower - protected from wrong flower penalty");
+        }
+        
+        // === RULE 3: Double Own Flower Bonus ===
+        if (ownFlowerCount >= 2)
+        {
+            currentScore += 1;
+            flowerMessages.Add($"Double Own Flower (#{ownFlowerNumber}): +1 point");
+            Debug.Log($"[FlowerScore] Double own flower bonus: +1");
+        }
+        
+        // === RULE 4 & 5: Complete Set (1-4) Bonuses ===
+        bool hasAll1234 = flowersByValue.ContainsKey(1) && 
+                          flowersByValue.ContainsKey(2) && 
+                          flowersByValue.ContainsKey(3) && 
+                          flowersByValue.ContainsKey(4);
+        
+        if (hasAll1234)
+        {
+            // Check if all 1-4 are same color
+            var flowers1to4 = FlowerTiles.Where(t => t.value >= 1 && t.value <= 4).ToList();
+            bool allSameColor = flowers1to4.All(t => t.suit == MahjongSuit.RedFlowers) ||
+                               flowers1to4.All(t => t.suit == MahjongSuit.BlueFlower);
+            
+            if (allSameColor)
+            {
+                currentScore += 2;
+                string colorName = flowers1to4[0].suit == MahjongSuit.RedFlowers ? "Red" : "Blue";
+                flowerMessages.Add($"Complete {colorName} Set (1-4): +2 points");
+                Debug.Log($"[FlowerScore] Complete same-color set: +2");
+            }
+            else
+            {
+                currentScore += 1;
+                flowerMessages.Add("Complete Mixed Set (1-4): +1 point");
+                Debug.Log($"[FlowerScore] Complete mixed-color set: +1");
+            }
+        }
+        
+        // === RULE 6: All 8 Flowers Bonus ===
+        if (FlowerTiles.Count == 8)
+        {
+            currentScore += 3;
+            flowerMessages.Add("All 8 Flowers: +3 points");
+            Debug.Log($"[FlowerScore] All 8 flowers bonus: +3");
+        }
+        
+        Debug.Log($"[FlowerScore] Final score: {currentScore} (started at {startingScore})");
         return currentScore;
     }
 
@@ -589,8 +678,18 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
         return bonus;
     }
 
-public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 1)
+    /// <summary>
+    /// Calculate total score including flower bonuses.
+    /// </summary>
+    /// <param name="analysis">Hand analysis result</param>
+    /// <param name="playerSeat">Player's seat (0-3)</param>
+    /// <param name="flowerMessages">Output list of flower messages</param>
+    /// <param name="startingScore">Base score</param>
+    /// <returns>Total score</returns>
+    public int CalculateTotalScore(HandAnalysisResult analysis, int playerSeat, out List<string> flowerMessages, int startingScore = 1)
     {
+        flowerMessages = new List<string>();
+        
         Debug.Log($"Scoring Check: IsWinningHand={analysis.IsWinningHand}, Is13Orphans={analysis.Is13OrphansWin}");
         if (!analysis.IsWinningHand) return 0; 
 
@@ -598,12 +697,14 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
         if (analysis.Is13OrphansWin)
         {
             Debug.Log("WIN CONDITION: Thirteen Orphans! (8 points)");
+            flowerMessages.Add("Thirteen Orphans: 8 points (flowers not applied)");
             return 8;
         }
         
-        // CALCULATE FLOWER SCORE ONCE HERE, now that 13 Orphans is ruled out.
-        // This variable is now in the main method scope and can be used below.
-        int scoreAfterFlowers = CalculateFlowerScore(startingScore); 
+        // CALCULATE FLOWER SCORE WITH NEW SYSTEM
+        List<string> tempFlowerMessages;
+        int scoreAfterFlowers = CalculateFlowerScore(startingScore, playerSeat, out tempFlowerMessages);
+        flowerMessages.AddRange(tempFlowerMessages);
         
         // --- EXCLUSIVE CASE 2: SEVEN PAIRS (+2 Points) ---
         if (analysis.Is7PairsWin)
@@ -629,7 +730,121 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
         int honorBonus = CalculateHonorTileBonus(analysis); 
         
         // Sum the flower score, hand bonus (Pure/Half/All Chows/All Pungs), and honor bonus (Winds/Dragons)
-        return scoreAfterFlowers + handBonus + honorBonus;
+        int finalScore = scoreAfterFlowers + handBonus + honorBonus;
+        Debug.Log($"[TotalScore] Final: {finalScore} = {scoreAfterFlowers} (flowers) + {handBonus} (hand) + {honorBonus} (honors)");
+        return finalScore;
+    }
+
+    /// <summary>
+    /// Calculate total score including all bonuses (flowers, Tsumo, Kongs).
+    /// </summary>
+    /// <param name="analysis">Hand analysis result</param>
+    /// <param name="playerSeat">Player's seat (0-3)</param>
+    /// <param name="isTsumo">True if self-drawn win, false if Ron</param>
+    /// <param name="selfKongCount">Number of self-declared Kongs</param>
+    /// <param name="discardKongCount">Number of Kongs from discards</param>
+    /// <param name="flowerMessages">Output list of all bonus messages</param>
+    /// <param name="startingScore">Base score</param>
+    /// <returns>Total score</returns>
+    public int CalculateTotalScore(
+        HandAnalysisResult analysis, 
+        int playerSeat, 
+        bool isTsumo,
+        int selfKongCount,
+        int discardKongCount,
+        int completedMeldCount,
+        out List<string> flowerMessages, 
+        int startingScore = 1)
+    {
+        flowerMessages = new List<string>();
+        
+        Debug.Log($"[TotalScore] Scoring Check: IsWinningHand={analysis.IsWinningHand}, Is13Orphans={analysis.Is13OrphansWin}");
+        Debug.Log($"[TotalScore] Win Type: {(isTsumo ? "Tsumo (self-drawn)" : "Ron (discard)")}");
+        Debug.Log($"[TotalScore] Self-Kongs: {selfKongCount}, Discard-Kongs: {discardKongCount}");
+        
+        if (!analysis.IsWinningHand) return 0; 
+
+        // --- EXCLUSIVE CASE 1: 13 ORPHANS (8 Points) ---
+        if (analysis.Is13OrphansWin)
+        {
+            Debug.Log("[TotalScore] WIN CONDITION: Thirteen Orphans! (8 points)");
+            flowerMessages.Add("Thirteen Orphans: 8 points (flowers not applied)");
+            return 8;
+        }
+        
+        // CALCULATE FLOWER SCORE
+        List<string> tempFlowerMessages;
+        int scoreAfterFlowers = CalculateFlowerScore(startingScore, playerSeat, out tempFlowerMessages);
+        flowerMessages.AddRange(tempFlowerMessages);
+        
+        // --- EXCLUSIVE CASE 2: SEVEN PAIRS (+3 Points) ---
+        if (analysis.Is7PairsWin)
+        {
+            Debug.Log("[TotalScore] WIN CONDITION: Seven Pairs! (+3 points)"); 
+            return scoreAfterFlowers + 3;
+        }
+        
+        // Get the hand bonus for all other winning cases (Pure, Half, Traditional)
+        int handBonus = CalculateHandBonusScore(analysis);
+        
+        // --- SCENARIO 1: Non-Traditional Pure Hand ---
+        if (analysis.IsPureHand && !analysis.IsTraditionalWin)
+        {
+            return scoreAfterFlowers + handBonus;
+        }
+
+        // --- DETECT SPECIAL WIN CONDITIONS ---
+        DetectSpecialWinConditions(analysis, isTsumo, completedMeldCount, selfKongCount);
+
+        // --- Standard Case: All Traditional Wins ---
+        int honorBonus = CalculateHonorTileBonus(analysis);
+        
+        // NEW: Calculate All Hidden bonus (includes Tsumo)
+        int allHiddenBonus = 0;
+        if (analysis.IsAllHidden)
+        {
+            allHiddenBonus = 3;
+            flowerMessages.Add("All Hidden Hand (Menzen Tsumo): +3 points");
+            Debug.Log("[TotalScore] All Hidden bonus: +3 (includes Tsumo)");
+        }
+        // NEW: Calculate Tsumo bonus (only if NOT All Hidden)
+        else if (isTsumo)
+        {
+            allHiddenBonus = 1;
+            flowerMessages.Add("Tsumo (Self-Drawn Win): +1 point");
+            Debug.Log("[TotalScore] Tsumo bonus: +1");
+        }
+        
+        // NEW: Calculate All Shown bonus
+        int allShownBonus = 0;
+        if (analysis.IsAllShown)
+        {
+            allShownBonus = 2;
+            flowerMessages.Add("All Shown Hand: +2 points");
+            Debug.Log("[TotalScore] All Shown bonus: +2");
+        }
+        
+        // NEW: Calculate Kong bonuses
+        int kongBonus = 0;
+        if (selfKongCount > 0)
+        {
+            kongBonus += selfKongCount * 2;
+            flowerMessages.Add($"Self-Drawn Kong{(selfKongCount > 1 ? "s" : "")} ({selfKongCount}): +{selfKongCount * 2} point{(selfKongCount * 2 > 1 ? "s" : "")}");
+            Debug.Log($"[TotalScore] Self-Kong bonus: +{selfKongCount * 2} ({selfKongCount} kongs x 2)");
+        }
+        
+        if (discardKongCount > 0)
+        {
+            kongBonus += discardKongCount;
+            flowerMessages.Add($"Kong{(discardKongCount > 1 ? "s" : "")} from Discard ({discardKongCount}): +{discardKongCount} point{(discardKongCount > 1 ? "s" : "")}");
+            Debug.Log($"[TotalScore] Discard-Kong bonus: +{discardKongCount} ({discardKongCount} kongs x 1)");
+        }
+        
+        // Sum all bonuses
+        int finalScore = scoreAfterFlowers + handBonus + honorBonus + allHiddenBonus + allShownBonus + kongBonus;
+        Debug.Log($"[TotalScore] Final: {finalScore} = {scoreAfterFlowers} (flowers) + {handBonus} (hand) + {honorBonus} (honors) + {allHiddenBonus} (hidden/tsumo) + {allShownBonus} (shown) + {kongBonus} (kongs)");
+        
+        return finalScore;
     }
     
     // ADDED: New method to log the composition of the winning hand
@@ -765,10 +980,59 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
 
         return result;
     }
-    
+
+    internal int CalculateTotalScore(HandAnalysisResult analysis, int v)
+    {
+        throw new System.NotImplementedException();
+    }
+
     // --- HandChecker Utility Class ---
 
-
+    /// <summary>
+    /// Detect All Hidden and All Shown hand conditions.
+    /// Must be called AFTER basic win analysis is complete.
+    /// </summary>
+    /// <param name="analysis">Hand analysis result to update</param>
+    /// <param name="isTsumo">Whether this is a Tsumo win</param>
+    /// <param name="completedMeldCount">Number of Chi/Pon/Kong from discards</param>
+    /// <param name="selfKongCount">Number of self-declared Kongs</param>
+    private void DetectSpecialWinConditions(HandAnalysisResult analysis, bool isTsumo, int completedMeldCount, int selfKongCount)
+    {
+        // --- ALL HIDDEN HAND (Menzen Tsumo) ---
+        // Conditions:
+        // 1. Win by Tsumo (self-drawn)
+        // 2. No melds from discards (no Chi/Pon/Kong from opponents)
+        // 3. Self-drawn Kongs ARE allowed
+        if (isTsumo && completedMeldCount == 0)
+        {
+            analysis.IsAllHidden = true;
+            Debug.Log("[DetectSpecialWins] All Hidden Hand detected!");
+            Debug.Log($"[DetectSpecialWins]   - Tsumo: Yes");
+            Debug.Log($"[DetectSpecialWins]   - Completed melds from discards: 0");
+            Debug.Log($"[DetectSpecialWins]   - Self-drawn Kongs: {selfKongCount} (allowed)");
+        }
+        
+        // --- ALL SHOWN HAND (Toitoi Hoitei) ---
+        // Conditions:
+        // 1. Win by Ron (opponent's discard)
+        // 2. All 4 sets are from completed melds (Chi/Pon/Kong from discards)
+        // 3. No concealed sets in hand (except the pair)
+        // 
+        // Note: With self-Kongs, this becomes impossible because:
+        // - Self-Kongs are concealed (not from discards)
+        // - So we need: completedMeldCount == 4 AND selfKongCount == 0
+        if (!isTsumo && completedMeldCount == 4 && selfKongCount == 0)
+        {
+            analysis.IsAllShown = true;
+            Debug.Log("[DetectSpecialWins] All Shown Hand detected!");
+            Debug.Log($"[DetectSpecialWins]   - Ron: Yes");
+            Debug.Log($"[DetectSpecialWins]   - Completed melds from discards: 4");
+            Debug.Log($"[DetectSpecialWins]   - Self-drawn Kongs: 0");
+            Debug.Log($"[DetectSpecialWins]   - Concealed tiles: Only the pair + Ron tile");
+        }
+        
+        Debug.Log($"[DetectSpecialWins] IsAllHidden: {analysis.IsAllHidden}, IsAllShown: {analysis.IsAllShown}");
+    }
     private static class HandChecker
     {
         // Renamed and modified to accept the number of sets needed from the hand.
@@ -847,6 +1111,8 @@ public int CalculateTotalScore(HandAnalysisResult analysis, int startingScore = 
             }
             return false;
         }
+
+        
 
         // REMOVED: HandChecker.CanForm4SetsAnd1PairAndAnalyze since CanFormRemainingSetsAndPairAndAnalyze is the unified method now.
 

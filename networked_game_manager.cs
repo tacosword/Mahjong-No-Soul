@@ -590,21 +590,24 @@ public class NetworkedGameManager : NetworkBehaviour
     /// <summary>
     /// Player declared Mahjong (Tsumo).
     /// </summary>
-    [Server]
-    public void PlayerDeclaredMahjong(int playerIndex, HandAnalysisResult analysis, int score, List<int> tileSortValues)
+[Server]
+    public void PlayerDeclaredMahjong(int playerIndex, HandAnalysisResult analysis, int score, List<int> tileSortValues, List<string> flowerMessages)
     {
+        Debug.Log($"[GameManager] ===== PLAYER DECLARED MAHJONG (TSUMO) =====");
+        Debug.Log($"[GameManager] Player index: {playerIndex}");
+        Debug.Log($"[GameManager] Score: {score}");
+        Debug.Log($"[GameManager] Flower messages count: {flowerMessages?.Count ?? 0}");
         NetworkPlayer winner = players[playerIndex];
         Debug.Log($"Player {playerIndex} ({winner.Username}) wins with {score} points!");
-        Debug.Log($"Winning tiles ({tileSortValues.Count}): {string.Join(", ", tileSortValues)}");
 
-        RpcShowWinScreen(playerIndex, winner.Username, score, analysis, tileSortValues);
+        RpcShowWinScreen(playerIndex, winner.Username, score, analysis, tileSortValues, flowerMessages);
     }
 
     /// <summary>
     /// Player declared Ron (win on opponent's discard)
     /// </summary>
     [Server]
-    public void PlayerDeclaredRon(int playerIndex, int ronTile, HandAnalysisResult analysis, int score, List<int> tileSortValues)
+    public void PlayerDeclaredRon(int playerIndex, int ronTile, HandAnalysisResult analysis, int score, List<int> tileSortValues, List<string> flowerMessages)
     {
         Debug.Log($"[GameManager] ===== RON DECLARED =====");
         Debug.Log($"[GameManager] Player {playerIndex} won with Ron!");
@@ -615,7 +618,7 @@ public class NetworkedGameManager : NetworkBehaviour
         Debug.Log($"[GameManager] Winner: {winner.Username} (Seat {playerIndex})");
 
         // Show win screen to all clients
-        RpcShowWinScreen(playerIndex, winner.Username, score, analysis, tileSortValues);
+        RpcShowWinScreen(playerIndex, winner.Username, score, analysis, tileSortValues, flowerMessages);
     }
 
     // ===== CLIENT RPCs =====
@@ -733,18 +736,17 @@ public class NetworkedGameManager : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void RpcShowWinScreen(int winnerIndex, string winnerName, int score, HandAnalysisResult analysis, List<int> tileSortValues)
+    private void RpcShowWinScreen(int winnerIndex, string winnerName, int score, HandAnalysisResult analysis, List<int> tileSortValues, List<string> flowerMessages)
     {
-        Debug.Log($"[RpcShowWinScreen] ===== CLIENT RECEIVED WIN =====");
-        Debug.Log($"[RpcShowWinScreen] Winner: {winnerName} (Seat {winnerIndex})");
-        Debug.Log($"[RpcShowWinScreen] Score: {score}");
-        Debug.Log($"[RpcShowWinScreen] Tiles: {string.Join(", ", tileSortValues)}");
-        Debug.Log($"[RpcShowWinScreen] IsTraditionalWin: {analysis.IsTraditionalWin}");
+        Debug.Log($"WINNER: {winnerName} (Seat {winnerIndex}) - {score} points");
+        Debug.Log($"Tile values count: {tileSortValues?.Count ?? 0}");
+        Debug.Log($"Flower messages count: {flowerMessages?.Count ?? 0}");
         
+        // Find and show result screen
         ResultScreenUI resultScreen = FindFirstObjectByType<ResultScreenUI>();
         if (resultScreen != null)
         {
-            resultScreen.ShowResult(analysis, score, winnerIndex, tileSortValues);
+            resultScreen.ShowResult(analysis, score, winnerIndex, tileSortValues, flowerMessages);
         }
     }
 
