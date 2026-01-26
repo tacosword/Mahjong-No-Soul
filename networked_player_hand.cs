@@ -1560,9 +1560,10 @@ public class NetworkedPlayerHand : NetworkBehaviour
             }
             
             // Calculate potential score
-            int potentialScore = CalculatePotentialScore(tileData);
+            // Calculate BOTH Tsumo and Ron scores
+            (int tsumoScore, int ronScore) = CalculatePotentialScores(tileData);
             
-            Debug.Log($"[ShowTenpaiUI] Creating icon for tile {tileData.GetSortValue()} - {potentialScore} pts");
+            Debug.Log($"[ShowTenpaiUI] Tile {tileData.GetSortValue()} - Tsumo: {tsumoScore} pts, Ron: {ronScore} pts");
             
             // Create icon
             GameObject icon = Instantiate(tenpaiIconPrefab, tenpaiIconsContainer);
@@ -1633,19 +1634,20 @@ public class NetworkedPlayerHand : NetworkBehaviour
             scoreText.gameObject.SetActive(true);
             scoreText.enabled = true;
             
-            // Set score text and color
-            scoreText.text = $"{potentialScore}";
+            // Set score text with BOTH Tsumo and Ron scores
+            scoreText.text = $"{tsumoScore}\n{ronScore}";
             
             // Add outline for visibility
             scoreText.outlineWidth = 0.3f;
             scoreText.outlineColor = Color.black;
             
-            // Color code high scores - use BRIGHT colors
-            if (potentialScore >= 8)
+            // Color code based on HIGHER score - use BRIGHT colors
+            int maxScore = Mathf.Max(tsumoScore, ronScore);
+            if (maxScore >= 8)
             {
                 scoreText.color = new Color(1f, 1f, 0f, 1f); // Bright yellow
             }
-            else if (potentialScore >= 4)
+            else if (maxScore >= 4)
             {
                 scoreText.color = new Color(0f, 1f, 0f, 1f); // Bright green
             }
@@ -1674,18 +1676,37 @@ public class NetworkedPlayerHand : NetworkBehaviour
     }
     
     /// <summary>
-    /// Calculate what the score would be if this tile completed the hand.
+    /// Calculate both Tsumo and Ron scores for a candidate tile.
     /// </summary>
-    private int CalculatePotentialScore(TileData candidate)
+    private (int tsumoScore, int ronScore) CalculatePotentialScores(TileData candidate)
     {
+        Debug.Log($"[CalculatePotentialScores] START for tile {candidate.GetSortValue()}");
+        
+        // CRITICAL FIX: Sync the hand state FIRST
+        // This ensures logicHand.HandTiles matches the actual spawnedTiles
+        SyncGameObjectsToPlayerHand();
+        
+        Debug.Log($"[CalculatePotentialScores] After sync: HandTiles={logicHand.HandTiles.Count}, DrawnTile={(logicHand.DrawnTile != null ? logicHand.DrawnTile.GetSortValue().ToString() : "null")}");
+        
         // Save current drawn tile
         TileData originalDrawn = logicHand.DrawnTile;
         
         // Temporarily set the candidate as the drawn tile
         logicHand.SetDrawnTile(candidate);
         
-        // Analyze and score
+        Debug.Log($"[CalculatePotentialScores] Set candidate as drawn tile: {candidate.GetSortValue()}");
+        
+        // Analyze the hand
         HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
+        
+        Debug.Log($"[CalculatePotentialScores] Analysis result: IsWinningHand={analysis.IsWinningHand}");
+        
+        if (!analysis.IsWinningHand)
+        {
+            Debug.LogWarning($"[CalculatePotentialScores] Tile {candidate.GetSortValue()} does NOT form a winning hand!");
+            logicHand.SetDrawnTile(originalDrawn);
+            return (0, 0);
+        }
         
         // Calculate Kong counts for accurate scoring
         int selfKongCount = logicHand.MeldedKongs.Count / 4;
@@ -1695,16 +1716,39 @@ public class NetworkedPlayerHand : NetworkBehaviour
             discardKongCount = completedMelds.Count(m => m.Type == InterruptActionType.Kong);
         }
         
-        // Calculate score (assume Tsumo for potential score display)
-        List<string> unusedMessages;
-        bool isTsumo = true; // Assume Tsumo for potential score
         int completedMeldCount = completedMelds?.Count ?? 0;
-        int score = logicHand.CalculateTotalScore(analysis, seatIndex, isTsumo, selfKongCount, discardKongCount, completedMeldCount, out unusedMessages, 1);
+        List<string> unusedMessages;
+        
+        // Calculate TSUMO score (self-drawn)
+        int tsumoScore = logicHand.CalculateTotalScore(
+            analysis, 
+            seatIndex, 
+            isTsumo: true,      // TSUMO
+            selfKongCount, 
+            discardKongCount, 
+            completedMeldCount, 
+            out unusedMessages, 
+            startingScore: 1
+        );
+        
+        // Calculate RON score (from discard)
+        int ronScore = logicHand.CalculateTotalScore(
+            analysis, 
+            seatIndex, 
+            isTsumo: false,     // RON
+            selfKongCount, 
+            discardKongCount, 
+            completedMeldCount, 
+            out unusedMessages, 
+            startingScore: 1
+        );
+        
+        Debug.Log($"[CalculatePotentialScores] Tile {candidate.GetSortValue()}: Tsumo={tsumoScore}, Ron={ronScore}");
         
         // Restore original drawn tile
         logicHand.SetDrawnTile(originalDrawn);
         
-        return score;
+        return (tsumoScore, ronScore);
     }
     
     /// <summary>
