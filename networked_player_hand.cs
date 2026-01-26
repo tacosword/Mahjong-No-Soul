@@ -655,6 +655,26 @@ public class NetworkedPlayerHand : NetworkBehaviour
             TileData data = tileGO.GetComponent<TileData>();
             if (data != null) logicHand.CollectFlower(data);
         }
+        
+        // 4. ===== NEW: Sync Completed Melds =====
+        // These are Chi/Pon/Kong sets taken from opponent discards
+        // They're stored in completedMelds but need to be added to logicHand for win checking
+        
+        // Clear any existing completed meld data in logicHand
+        if (logicHand.CompletedMelds == null)
+        {
+            logicHand.CompletedMelds = new List<CompletedMeld>();
+        }
+        
+        logicHand.CompletedMelds.Clear();
+        
+        // Copy all completed melds to the logic hand
+        foreach (CompletedMeld meld in completedMelds)
+        {
+            logicHand.CompletedMelds.Add(meld);
+        }
+        
+        Debug.Log($"[SyncGameObjects] Synced {completedMelds.Count} completed melds to logic hand");
     }
 
     /// <summary>
@@ -1429,6 +1449,11 @@ public class NetworkedPlayerHand : NetworkBehaviour
         
         Debug.Log($"[RequestTenpaiCheck] Testing {NetworkedGameManager.Instance.TilePrefabs.Length} tile prefabs...");
         
+        // Calculate how many melds are already complete
+        int completedMeldCount = logicHand.CompletedMelds?.Count ?? 0;
+        
+        Debug.Log($"[TenpaiCheck] Starting scan: {currentHand.Count} concealed tiles, {completedMeldCount} completed melds, {currentKongs} self-Kongs");
+        
         foreach (GameObject prefab in NetworkedGameManager.Instance.TilePrefabs)
         {
             TileData candidate = prefab.GetComponent<TileData>();
@@ -1439,10 +1464,15 @@ public class NetworkedPlayerHand : NetworkBehaviour
             testHand.Add(candidate);
             testHand.AddRange(logicHand.MeldedKongs);
             
-            if (logicHand.IsValidMahjongHand(testHand, currentKongs))
+            // ===== FIX: Use new validation method that accounts for completed melds =====
+            bool isWinning = (completedMeldCount > 0) ?
+                logicHand.IsValidMahjongHandWithMelds(testHand, currentKongs, completedMeldCount) :
+                logicHand.IsValidMahjongHand(testHand, currentKongs);
+            
+            if (isWinning)
             {
                 winningTiles.Add(candidate);
-                Debug.Log($"[RequestTenpaiCheck] WINNING TILE FOUND: {candidate.GetSortValue()}");
+                Debug.Log($"[RequestTenpaiCheck] âœ WINNING TILE: {candidate.GetSortValue()}");
             }
         }
         

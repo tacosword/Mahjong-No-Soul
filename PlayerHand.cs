@@ -35,7 +35,10 @@ public class PlayerHand : MonoBehaviour
     public void SortHand() { handTiles.Sort((a, b) => a.GetSortValue().CompareTo(b.GetSortValue())); flowerTiles.Sort((a, b) => a.GetSortValue().CompareTo(b.GetSortValue())); }
     
     private List<TileData> meldedKongs = new List<TileData>();
-    public List<TileData> MeldedKongs => meldedKongs; // <<< NEW ACCESSOR
+    public List<TileData> MeldedKongs => meldedKongs;
+    
+    // ===== NEW: Completed Melds (Chi/Pon/Kong from discards) =====
+    public List<CompletedMeld> CompletedMelds { get; set; } = new List<CompletedMeld>();
 
     public bool IsValidMahjongHand(List<TileData> tiles, int numberOfKongs)
 {
@@ -1268,5 +1271,115 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
     Debug.Log($"[DECOMPOSE] FAILURE at {firstTileSortValue}. No path successful.");
     return false;
 }
+    }
+
+    /// <summary>
+    /// Validates a Mahjong hand that includes completed melds (Chi/Pon/Kong from discards).
+    /// </summary>
+    /// <param name="concealedTiles">Tiles still in the concealed hand</param>
+    /// <param name="selfKongCount">Number of self-drawn Kongs</param>
+    /// <param name="completedMeldCount">Number of Chi/Pon/Kong taken from discards</param>
+    /// <returns>True if the hand is valid</returns>
+    public bool IsValidMahjongHandWithMelds(List<TileData> concealedTiles, int selfKongCount, int completedMeldCount)
+    {
+        // Calculate how many sets still need to be formed from the concealed tiles
+        int setsAlreadyComplete = completedMeldCount;
+        int setsStillNeeded = 4 - setsAlreadyComplete;
+        
+        // Filter out flowers
+        List<TileData> functionalTiles = concealedTiles.Where(t => 
+            t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower).ToList();
+        
+        // Expected tile count:
+        // - 1 pair (2 tiles)
+        // - setsStillNeeded sets (each 3 tiles)
+        // - selfKongCount adds 1 extra tile per Kong (since Kongs have 4 tiles instead of 3)
+        int expectedCount = 2 + (setsStillNeeded * 3) + selfKongCount;
+        
+        Debug.Log($"[IsValidWithMelds] Concealed: {functionalTiles.Count}, Expected: {expectedCount}, SetsComplete: {setsAlreadyComplete}, SetsNeeded: {setsStillNeeded}, Kongs: {selfKongCount}");
+        
+        if (functionalTiles.Count != expectedCount)
+        {
+            Debug.Log($"[IsValidWithMelds] Tile count mismatch! {functionalTiles.Count} != {expectedCount}");
+            return false;
+        }
+        
+        Dictionary<int, int> tileCounts = GetTileCounts(functionalTiles);
+        
+        // Special hands only work if no completed melds
+        if (completedMeldCount == 0 && selfKongCount == 0)
+        {
+            if (CheckFor13Orphans(tileCounts)) return true;
+            if (CheckFor7Pairs(tileCounts)) return true;
+        }
+        
+        // Traditional structure: form (setsStillNeeded) sets + 1 pair
+        List<int> tileValues = functionalTiles.Select(t => t.GetSortValue()).OrderBy(v => v).ToList();
+        
+        // Try every possible pair
+        HashSet<int> potentialPairs = new HashSet<int>(tileValues);
+        foreach (int pairValue in potentialPairs)
+        {
+            if (tileValues.Count(v => v == pairValue) >= 2)
+            {
+                List<int> workingHand = new List<int>(tileValues);
+                workingHand.Remove(pairValue);
+                workingHand.Remove(pairValue);
+                
+                // Check if remaining tiles can form the needed sets
+                if (CanFormExactSets(workingHand, setsStillNeeded, selfKongCount))
+                {
+                    Debug.Log($"[IsValidWithMelds] âœ Valid hand found! Pair: {pairValue}");
+                    return true;
+                }
+            }
+        }
+        
+        // Check Pure Hand as fallback
+        if (IsPureHandCustom(functionalTiles)) return true;
+        
+        Debug.Log($"[IsValidWithMelds] No valid structure found");
+        return false;
+    }
+    
+    /// <summary>
+    /// Check if tiles can form exactly N sets (with possible Kongs).
+    /// </summary>
+    private bool CanFormExactSets(List<int> tiles, int setsNeeded, int kongsRemaining)
+    {
+        // Base case: No more sets needed
+        if (setsNeeded == 0 && tiles.Count == 0) return true;
+        if (setsNeeded == 0 && tiles.Count > 0) return false;
+        if (setsNeeded > 0 && tiles.Count == 0) return false;
+        
+        int firstTile = tiles[0];
+        
+        // Option 1: Form a Kong (4 of a kind)
+        if (kongsRemaining > 0 && tiles.Count(v => v == firstTile) == 4)
+        {
+            List<int> nextHand = new List<int>(tiles);
+            for (int i = 0; i < 4; i++) nextHand.Remove(firstTile);
+            if (CanFormExactSets(nextHand, setsNeeded - 1, kongsRemaining - 1)) return true;
+        }
+        
+        // Option 2: Form a Triplet (3 of a kind)
+        if (tiles.Count(v => v == firstTile) >= 3)
+        {
+            List<int> nextHand = new List<int>(tiles);
+            for (int i = 0; i < 3; i++) nextHand.Remove(firstTile);
+            if (CanFormExactSets(nextHand, setsNeeded - 1, kongsRemaining)) return true;
+        }
+        
+        // Option 3: Form a Sequence (consecutive)
+        if (tiles.Contains(firstTile + 1) && tiles.Contains(firstTile + 2))
+        {
+            List<int> nextHand = new List<int>(tiles);
+            nextHand.Remove(firstTile);
+            nextHand.Remove(firstTile + 1);
+            nextHand.Remove(firstTile + 2);
+            if (CanFormExactSets(nextHand, setsNeeded - 1, kongsRemaining)) return true;
+        }
+        
+        return false;
     }
 }
