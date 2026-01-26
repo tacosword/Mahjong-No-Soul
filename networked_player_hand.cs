@@ -417,6 +417,73 @@ public class NetworkedPlayerHand : NetworkBehaviour
     }
 
     /// <summary>
+    /// Update opponent hand display to show correct number of concealed tiles.
+    /// Only runs for opponent views (not the local player).
+    /// </summary>
+    private void UpdateOpponentHandDisplay(int concealedTileCount)
+    {
+        // Only update if this is an opponent's hand (not mine)
+        if (isOwned) 
+        {
+            Debug.Log($"[UpdateOpponentHandDisplay] Skipping - this is my own hand");
+            return;
+        }
+        
+        Debug.Log($"[UpdateOpponentHandDisplay] Seat {seatIndex}: Updating to {concealedTileCount} tiles");
+        
+        if (handContainer == null)
+        {
+            Debug.LogError($"[UpdateOpponentHandDisplay] Hand container is null!");
+            return;
+        }
+        
+        // Save the drawn tile (if it exists)
+        GameObject savedDrawnTile = drawnTile;
+        
+        // Destroy all current hand tiles
+        foreach (GameObject tile in spawnedTiles)
+        {
+            if (tile != null) 
+            {
+                Destroy(tile);
+            }
+        }
+        spawnedTiles.Clear();
+        
+        // Get a tile prefab to use as face-down placeholder
+        if (NetworkedGameManager.Instance == null || 
+            NetworkedGameManager.Instance.TilePrefabs == null || 
+            NetworkedGameManager.Instance.TilePrefabs.Length == 0)
+        {
+            Debug.LogError("[UpdateOpponentHandDisplay] No tile prefabs available!");
+            return;
+        }
+        
+        GameObject placeholderPrefab = NetworkedGameManager.Instance.TilePrefabs[0];
+        
+        // Create the correct number of face-down tiles
+        for (int i = 0; i < concealedTileCount; i++)
+        {
+            GameObject tile = Instantiate(placeholderPrefab, handContainer);
+            tile.name = $"OpponentTile_{i}_Seat{seatIndex}";
+            
+            // Disable clicking for opponent tiles
+            Collider col = tile.GetComponent<Collider>();
+            if (col != null) col.enabled = false;
+            
+            spawnedTiles.Add(tile);
+        }
+        
+        // Restore drawn tile
+        drawnTile = savedDrawnTile;
+        
+        // Reposition everything
+        RepositionTiles();
+        
+        Debug.Log($"[UpdateOpponentHandDisplay] ✓ Updated seat {seatIndex} to {concealedTileCount} tiles");
+    }
+
+    /// <summary>
     /// Discard a tile (player clicks on it).
     /// </summary>
     public void DiscardAndDrawTile(Vector3 handPosition, GameObject discardedTile)
@@ -468,6 +535,46 @@ public class NetworkedPlayerHand : NetworkBehaviour
 
         // Tell server
         CmdDiscardTile(seatIndex, tileValue, handPosition);
+    }
+
+    /// <summary>
+    /// Tell all clients to update the visual display of an opponent's hand.
+    /// Called when a player's concealed hand size changes due to melds.
+    /// </summary>
+    [ClientRpc]
+    private void RpcUpdateOpponentHandSize(int playerSeatIndex, int newConcealedCount)
+    {
+        Debug.Log($"[RpcUpdateOpponentHandSize] Player {playerSeatIndex} now has {newConcealedCount} concealed tiles");
+        
+        // Find the player at this seat
+        NetworkPlayer[] allPlayers = FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None);
+        NetworkPlayer targetPlayer = null;
+        
+        foreach (NetworkPlayer player in allPlayers)
+        {
+            if (player.PlayerIndex == playerSeatIndex)
+            {
+                targetPlayer = player;
+                break;
+            }
+        }
+        
+        if (targetPlayer == null)
+        {
+            Debug.LogWarning($"[RpcUpdateOpponentHandSize] Could not find player at seat {playerSeatIndex}");
+            return;
+        }
+        
+        // Update their hand display
+        NetworkedPlayerHand hand = targetPlayer.GetComponent<NetworkedPlayerHand>();
+        if (hand != null)
+        {
+            hand.UpdateOpponentHandDisplay(newConcealedCount);
+        }
+        else
+        {
+            Debug.LogWarning($"[RpcUpdateOpponentHandSize] Player at seat {playerSeatIndex} has no NetworkedPlayerHand!");
+        }
     }
     
     /// <summary>
@@ -750,26 +857,20 @@ public class NetworkedPlayerHand : NetworkBehaviour
 
         // Tell server
         List<int> kongTileSortValues = new List<int> { targetValue, targetValue, targetValue, targetValue };
-        CmdDeclareKong(seatIndex, targetValue, kongTileSortValues);
-        
-        Debug.Log($"[ExecuteKong] Self-drawn Kong complete. meldedKongs count: {logicHand.MeldedKongs.Count}");
+        int newConcealedCount = spawnedTiles.Count;
+        CmdDeclareKong(seatIndex, targetValue, kongData.Select(t => t.GetSortValue()).ToList(), newConcealedCount);
     }
 
     [Command]
-    private void CmdDeclareKong(int playerIndex, int kongValue, List<int> kongTiles)
+    private void CmdDeclareKong(int playerIndex, int kongValue, List<int> kongTiles, int newConcealedCount)
     {
-        Debug.Log($"[CmdDeclareKong] CLIENT→SERVER: playerIndex={playerIndex}, kongValue={kongValue}");
-        Debug.Log($"[CmdDeclareKong] Kong tiles: {string.Join(", ", kongTiles)}");
-        
         if (NetworkedGameManager.Instance != null)
         {
-            Debug.Log($"[CmdDeclareKong] Calling NetworkedGameManager.PlayerDeclaredKong...");
             NetworkedGameManager.Instance.PlayerDeclaredKong(playerIndex, kongValue, kongTiles);
         }
-        else
-        {
-            Debug.LogError("[CmdDeclareKong] NetworkedGameManager.Instance is NULL!");
-        }
+        
+        // Broadcast hand size update
+        RpcUpdateOpponentHandSize(seatIndex, newConcealedCount);
     }
 
     /// <summary>
@@ -2144,7 +2245,8 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         RepositionTiles();
 
         // NEW: Send meld data to server for broadcasting
-        CmdSendCompletedMeld(InterruptActionType.Pon, discardedTile, meldTiles);
+        int newConcealedCount = spawnedTiles.Count;
+        CmdSendCompletedMeld(InterruptActionType.Pon, discardedTile, meldTiles, newConcealedCount);
         
         Debug.Log($"[PlayerHand] Pon complete - meld has {meldObjects.Count} tiles");
     }
@@ -2192,7 +2294,8 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         
         // Reposition remaining hand
         RepositionTiles();
-        CmdSendCompletedMeld(InterruptActionType.Kong, discardedTile, meldTiles);
+        int newConcealedCount = spawnedTiles.Count;
+        CmdSendCompletedMeld(InterruptActionType.Kong, discardedTile, meldTiles, newConcealedCount);
     
         Debug.Log($"[PlayerHand] Kong complete - meld has {meldObjects.Count} tiles");
     }
@@ -2302,7 +2405,8 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         RepositionTiles();
         
         // NEW: Send meld data to server for broadcasting
-        CmdSendCompletedMeld(InterruptActionType.Chi, discardedTile, meldTiles);
+        int newConcealedCount = spawnedTiles.Count;
+        CmdSendCompletedMeld(InterruptActionType.Chi, discardedTile, meldTiles, newConcealedCount);
         
         Debug.Log($"[PlayerHand] Chi complete - meld has {meldObjects.Count} tiles");
 
@@ -2631,15 +2735,29 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
     }
 
     [Command]
-    private void CmdSendCompletedMeld(InterruptActionType meldType, int calledTile, List<int> tileSortValues)
+    private void CmdSendCompletedMeld(InterruptActionType meldType, int calledTile, List<int> tileSortValues, int newConcealedCount)
     {
         Debug.Log($"[PlayerHand] Server received completed {meldType} meld: {string.Join(", ", tileSortValues)}");
+        Debug.Log($"[PlayerHand] Player {seatIndex} now has {newConcealedCount} concealed tiles");
         
         // Store for broadcasting
         if (NetworkedGameManager.Instance != null)
         {
             NetworkedGameManager.Instance.StoreMeldForBroadcast(seatIndex, meldType, calledTile, tileSortValues);
         }
+        
+        // Broadcast hand size update to all clients
+        RpcUpdateOpponentHandSize(seatIndex, newConcealedCount);
+    }
+
+    [Command]
+    private void CmdUpdateHandSize(int tilesRemoved)
+    {
+        // This runs on server - we need to get the actual concealed count
+        // The player who made the meld needs to tell us their new count
+        Debug.Log($"[CmdUpdateHandSize] Player {seatIndex} removed {tilesRemoved} tiles");
+        
+        // We'll handle this differently - have the client send the count directly
     }
 
     [Command]
