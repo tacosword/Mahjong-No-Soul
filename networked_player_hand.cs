@@ -1482,7 +1482,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
         if (winningTiles.Count > 0)
         {
             Debug.Log("[RequestTenpaiCheck] Calling ShowTenpaiUI...");
-            ShowTenpaiUI(hoveredTile.transform.position, winningTiles);
+            ShowTenpaiUI(hoveredTile.transform.position, winningTiles, hoveredData);
         }
         else
         {
@@ -1493,7 +1493,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
     /// <summary>
     /// Display the Tenpai UI showing which tiles complete the hand.
     /// </summary>
-    private void ShowTenpaiUI(Vector3 tileWorldPosition, List<TileData> winningTiles)
+    private void ShowTenpaiUI(Vector3 tileWorldPosition, List<TileData> winningTiles, TileData hoveredTile)
     {
         Debug.Log($"[ShowTenpaiUI] START - winningTiles count: {winningTiles.Count}");
         
@@ -1561,7 +1561,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
             
             // Calculate potential score
             // Calculate BOTH Tsumo and Ron scores
-            (int tsumoScore, int ronScore) = CalculatePotentialScores(tileData);
+            (int tsumoScore, int ronScore) = CalculatePotentialScores(tileData, hoveredTile);
             
             Debug.Log($"[ShowTenpaiUI] Tile {tileData.GetSortValue()} - Tsumo: {tsumoScore} pts, Ron: {ronScore} pts");
             
@@ -1680,22 +1680,35 @@ public class NetworkedPlayerHand : NetworkBehaviour
     /// IMPORTANT: This is called during Tenpai checking, where the hand is ALREADY synced
     /// and the hovered tile is ALREADY removed. Do NOT re-sync here!
     /// </summary>
-    private (int tsumoScore, int ronScore) CalculatePotentialScores(TileData candidate)
+    private (int tsumoScore, int ronScore) CalculatePotentialScores(TileData candidate, TileData hoveredTile)
     {
-        Debug.Log($"[CalculatePotentialScores] START for tile {candidate.GetSortValue()}");
+        Debug.Log($"[CalculatePotentialScores] START for candidate={candidate.GetSortValue()}, hoveredTile={hoveredTile.GetSortValue()}");
         
-        // ✅ REMOVED: SyncGameObjectsToPlayerHand() 
-        // The hand is already synced correctly by RequestTenpaiCheck before this is called
-        
-        Debug.Log($"[CalculatePotentialScores] After sync: HandTiles={logicHand.HandTiles.Count}, DrawnTile={(logicHand.DrawnTile != null ? logicHand.DrawnTile.GetSortValue().ToString() : "null")}");
-        
-        // Save current drawn tile
+        // Save original hand state
         TileData originalDrawn = logicHand.DrawnTile;
+        List<TileData> originalHandTiles = new List<TileData>(logicHand.HandTiles);
         
-        // Temporarily set the candidate as the drawn tile
+        Debug.Log($"[CalculatePotentialScores] Before removal: HandTiles={logicHand.HandTiles.Count}");
+        
+        // CRITICAL FIX: Remove the hovered tile from logicHand.HandTiles
+        // RequestTenpaiCheck removes it from a local copy, but we need to remove it from the logic hand too
+        var tileToRemove = logicHand.HandTiles.FirstOrDefault(t => t.GetSortValue() == hoveredTile.GetSortValue());
+        if (tileToRemove != null)
+        {
+            logicHand.HandTiles.Remove(tileToRemove);
+            Debug.Log($"[CalculatePotentialScores] Removed hovered tile {hoveredTile.GetSortValue()}: {originalHandTiles.Count} → {logicHand.HandTiles.Count}");
+        }
+        else
+        {
+            Debug.LogWarning($"[CalculatePotentialScores] Could not find hovered tile {hoveredTile.GetSortValue()} in HandTiles!");
+        }
+        
+        Debug.Log($"[CalculatePotentialScores] Hand state: HandTiles={logicHand.HandTiles.Count}, CompletedMelds={completedMelds?.Count ?? 0}");
+        
+        // Set the candidate as the drawn tile
         logicHand.SetDrawnTile(candidate);
         
-        Debug.Log($"[CalculatePotentialScores] Set candidate as drawn tile: {candidate.GetSortValue()}");
+        Debug.Log($"[CalculatePotentialScores] Set candidate {candidate.GetSortValue()} as drawn tile");
         
         // Analyze the hand
         HandAnalysisResult analysis = logicHand.CheckForWinAndAnalyze(completedMelds);
@@ -1705,7 +1718,12 @@ public class NetworkedPlayerHand : NetworkBehaviour
         if (!analysis.IsWinningHand)
         {
             Debug.LogWarning($"[CalculatePotentialScores] Tile {candidate.GetSortValue()} does NOT form a winning hand!");
+            
+            // RESTORE original state
+            logicHand.HandTiles.Clear();
+            logicHand.HandTiles.AddRange(originalHandTiles);
             logicHand.SetDrawnTile(originalDrawn);
+            
             return (0, 0);
         }
         
@@ -1745,9 +1763,14 @@ public class NetworkedPlayerHand : NetworkBehaviour
         );
         
         Debug.Log($"[CalculatePotentialScores] Tile {candidate.GetSortValue()}: Tsumo={tsumoScore}, Ron={ronScore}");
+        Debug.Log($"[CalculatePotentialScores]   IsAllHidden={analysis.IsAllHidden}, IsAllShown={analysis.IsAllShown}");
         
-        // Restore original drawn tile
+        // RESTORE original hand state
+        logicHand.HandTiles.Clear();
+        logicHand.HandTiles.AddRange(originalHandTiles);
         logicHand.SetDrawnTile(originalDrawn);
+        
+        Debug.Log($"[CalculatePotentialScores] Restored hand state: HandTiles={logicHand.HandTiles.Count}");
         
         return (tsumoScore, ronScore);
     }
