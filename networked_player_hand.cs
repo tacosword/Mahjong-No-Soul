@@ -3420,4 +3420,190 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         
         Debug.Log($"[PlayerHand] Flower tile {flowerTileValue} set aside");
     }
+
+    // ===== TILE HIGHLIGHTING SYSTEM =====
+    
+    /// <summary>
+    /// Highlight all visible matching tiles across the table.
+    /// Called when hovering over a tile in hand.
+    /// </summary>
+    public void HighlightMatchingTiles(int tileValue)
+    {
+        Debug.Log($"[HighlightMatching] Highlighting all tiles matching {tileValue}");
+        
+        // 1. Highlight tiles in MY hand
+        HighlightTilesInHand(tileValue);
+        
+        // 2. Highlight tiles in ALL melds (all players)
+        HighlightTilesInMelds(tileValue);
+        
+        // 3. Highlight tiles in ALL discard piles (all players)
+        HighlightTilesInDiscards(tileValue);
+    }
+    
+    /// <summary>
+    /// Remove all tile highlights.
+    /// Called when mouse exits a tile.
+    /// </summary>
+    public void ClearAllHighlights()
+    {
+        Debug.Log($"[ClearHighlights] Clearing all highlights");
+        
+        // 1. Clear hand highlights
+        ClearHandHighlights();
+        
+        // 2. Clear meld highlights
+        ClearMeldHighlights();
+        
+        // 3. Clear discard highlights
+        ClearDiscardHighlights();
+    }
+    
+    // ===== HAND HIGHLIGHTING =====
+    
+    private void HighlightTilesInHand(int targetValue)
+    {
+        foreach (GameObject tile in spawnedTiles)
+        {
+            if (tile == null) continue;
+            
+            TileData data = tile.GetComponent<TileData>();
+            if (data != null && data.GetSortValue() == targetValue)
+            {
+                SetTileHighlight(tile, true);
+            }
+        }
+        
+        // Also check drawn tile
+        if (drawnTile != null)
+        {
+            TileData data = drawnTile.GetComponent<TileData>();
+            if (data != null && data.GetSortValue() == targetValue)
+            {
+                SetTileHighlight(drawnTile, true);
+            }
+        }
+    }
+    
+    private void ClearHandHighlights()
+    {
+        foreach (GameObject tile in spawnedTiles)
+        {
+            if (tile != null) SetTileHighlight(tile, false);
+        }
+        
+        if (drawnTile != null) SetTileHighlight(drawnTile, false);
+    }
+    
+    // ===== MELD HIGHLIGHTING =====
+    
+    private void HighlightTilesInMelds(int targetValue)
+    {
+        // Find all KongArea containers (for all 4 seats)
+        for (int seat = 0; seat < 4; seat++)
+        {
+            string containerName = $"KongArea_Seat{seat}";
+            GameObject containerObj = GameObject.Find(containerName);
+            
+            if (containerObj == null) continue;
+            
+            // Check all children (meld tiles)
+            foreach (Transform child in containerObj.transform)
+            {
+                TileData data = child.GetComponent<TileData>();
+                if (data != null && data.GetSortValue() == targetValue)
+                {
+                    SetTileHighlight(child.gameObject, true);
+                }
+            }
+        }
+    }
+    
+    private void ClearMeldHighlights()
+    {
+        // Clear all KongArea highlights
+        for (int seat = 0; seat < 4; seat++)
+        {
+            string containerName = $"KongArea_Seat{seat}";
+            GameObject containerObj = GameObject.Find(containerName);
+            
+            if (containerObj == null) continue;
+            
+            foreach (Transform child in containerObj.transform)
+            {
+                SetTileHighlight(child.gameObject, false);
+            }
+        }
+    }
+    
+    // ===== DISCARD HIGHLIGHTING =====
+    
+    private void HighlightTilesInDiscards(int targetValue)
+    {
+        if (NetworkedGameManager.Instance == null) return;
+        
+        // Access the spawned discard tiles from GameManager
+        var spawnedDiscards = NetworkedGameManager.Instance.GetSpawnedDiscardTiles();
+        
+        if (spawnedDiscards == null) return;
+        
+        // Check all players' discard piles
+        foreach (var kvp in spawnedDiscards)
+        {
+            List<GameObject> discardTiles = kvp.Value;
+            
+            foreach (GameObject tile in discardTiles)
+            {
+                if (tile == null) continue;
+                
+                TileData data = tile.GetComponent<TileData>();
+                if (data != null && data.GetSortValue() == targetValue)
+                {
+                    SetTileHighlight(tile, true);
+                }
+            }
+        }
+    }
+    
+    private void ClearDiscardHighlights()
+    {
+        if (NetworkedGameManager.Instance == null) return;
+        
+        var spawnedDiscards = NetworkedGameManager.Instance.GetSpawnedDiscardTiles();
+        
+        if (spawnedDiscards == null) return;
+        
+        foreach (var kvp in spawnedDiscards)
+        {
+            List<GameObject> discardTiles = kvp.Value;
+            
+            foreach (GameObject tile in discardTiles)
+            {
+                if (tile != null) SetTileHighlight(tile, false);
+            }
+        }
+    }
+    
+    // ===== VISUAL HIGHLIGHTING =====
+    
+    /// <summary>
+    /// Set the highlight state of a tile by changing its material color.
+    /// </summary>
+    private void SetTileHighlight(GameObject tile, bool highlight)
+    {
+        Renderer renderer = tile.GetComponentInChildren<Renderer>();
+        if (renderer == null) return;
+        
+        if (highlight)
+        {
+            // Bright glow
+            renderer.material.color = Color.red;
+            renderer.material.SetFloat("_Emission", 2.0f); // If using Standard shader
+        }
+        else
+        {
+            renderer.material.color = Color.white;
+            renderer.material.SetFloat("_Emission", 0.0f);
+        }
+    }
 }

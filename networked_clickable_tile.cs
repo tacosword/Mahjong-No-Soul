@@ -155,6 +155,9 @@ public class NetworkedClickableTile : MonoBehaviour
         int sortValue = tileData.GetSortValue();
         Debug.Log($"[ClickableTile] Tile sort value: {sortValue}");
 
+        // === NEW: ALWAYS HIGHLIGHT MATCHING TILES ===
+        playerHand.HighlightMatchingTiles(sortValue);
+
         // CHECK CHI SELECTION MODE
         bool inChiMode = playerHand.IsInChiSelectionMode;
         Debug.Log($"[ClickableTile] IsInChiSelectionMode: {inChiMode}");
@@ -191,6 +194,9 @@ public class NetworkedClickableTile : MonoBehaviour
         if (playerHand != null)
         {
             playerHand.HideTenpaiVisuals();
+            
+            // === NEW: CLEAR ALL HIGHLIGHTS ===
+            playerHand.ClearAllHighlights();
         }
     }
 }

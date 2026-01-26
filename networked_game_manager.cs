@@ -1396,4 +1396,14 @@ public class NetworkedGameManager : NetworkBehaviour
         
         Debug.Log($"[GameManager] Repositioned {playerDiscards.Count} discard tiles for player {playerIndex}");
     }
+
+    // ===== PUBLIC ACCESSORS =====
+    
+    /// <summary>
+    /// Get all spawned discard tiles for highlighting purposes.
+    /// </summary>
+    public Dictionary<int, List<GameObject>> GetSpawnedDiscardTiles()
+    {
+        return spawnedDiscardTiles;
+    }
 }
