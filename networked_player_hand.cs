@@ -1677,14 +1677,15 @@ public class NetworkedPlayerHand : NetworkBehaviour
     
     /// <summary>
     /// Calculate both Tsumo and Ron scores for a candidate tile.
+    /// IMPORTANT: This is called during Tenpai checking, where the hand is ALREADY synced
+    /// and the hovered tile is ALREADY removed. Do NOT re-sync here!
     /// </summary>
     private (int tsumoScore, int ronScore) CalculatePotentialScores(TileData candidate)
     {
         Debug.Log($"[CalculatePotentialScores] START for tile {candidate.GetSortValue()}");
         
-        // CRITICAL FIX: Sync the hand state FIRST
-        // This ensures logicHand.HandTiles matches the actual spawnedTiles
-        SyncGameObjectsToPlayerHand();
+        // ✅ REMOVED: SyncGameObjectsToPlayerHand() 
+        // The hand is already synced correctly by RequestTenpaiCheck before this is called
         
         Debug.Log($"[CalculatePotentialScores] After sync: HandTiles={logicHand.HandTiles.Count}, DrawnTile={(logicHand.DrawnTile != null ? logicHand.DrawnTile.GetSortValue().ToString() : "null")}");
         

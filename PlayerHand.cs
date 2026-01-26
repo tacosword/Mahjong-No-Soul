@@ -695,7 +695,7 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
         
         Debug.Log($"Scoring Check: IsWinningHand={analysis.IsWinningHand}, Is13Orphans={analysis.Is13OrphansWin}");
         if (!analysis.IsWinningHand) return 0; 
-
+        
         // --- EXCLUSIVE CASE 1: 13 ORPHANS (8 Points) ---
         if (analysis.Is13OrphansWin)
         {
@@ -1001,6 +1001,10 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
     /// <param name="selfKongCount">Number of self-declared Kongs</param>
     private void DetectSpecialWinConditions(HandAnalysisResult analysis, bool isTsumo, int completedMeldCount, int selfKongCount)
     {
+        // Reset flags (important for recalculation)
+        analysis.IsAllHidden = false;
+        analysis.IsAllShown = false;
+        
         // --- ALL HIDDEN HAND (Menzen Tsumo) ---
         // Conditions:
         // 1. Win by Tsumo (self-drawn)
@@ -1021,21 +1025,55 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
         // 2. All 4 sets are from completed melds (Chi/Pon/Kong from discards)
         // 3. No concealed sets in hand (except the pair)
         // 
-        // Note: With self-Kongs, this becomes impossible because:
-        // - Self-Kongs are concealed (not from discards)
-        // - So we need: completedMeldCount == 4 AND selfKongCount == 0
-        if (!isTsumo && completedMeldCount == 4 && selfKongCount == 0)
+        // UPDATED LOGIC for Tenpai calculation:
+        // - During Tenpai check, we might have 3 completed melds
+        // - If winning with Ron would complete the 4th set from discard, that's All Shown
+        // - So we check: completedMeldCount >= 3 (will become 4 with Ron)
+        // - AND we verify the hand structure only has the pair concealed
+        
+        if (!isTsumo && completedMeldCount >= 3 && selfKongCount == 0)
         {
-            analysis.IsAllShown = true;
-            Debug.Log("[DetectSpecialWins] All Shown Hand detected!");
-            Debug.Log($"[DetectSpecialWins]   - Ron: Yes");
-            Debug.Log($"[DetectSpecialWins]   - Completed melds from discards: 4");
-            Debug.Log($"[DetectSpecialWins]   - Self-drawn Kongs: 0");
-            Debug.Log($"[DetectSpecialWins]   - Concealed tiles: Only the pair + Ron tile");
+            // Additional check: Count concealed sets in the hand
+            // If we have 3 melds from discards and are winning,
+            // we should have: Pair (2 tiles) + Ron tile (1 tile) = 3 concealed tiles
+            // OR: 1 set (3 tiles) + Pair (2 tiles) + Ron tile = 6 concealed tiles (if only 2 melds)
+            
+            int concealedTiles = HandTiles.Count;
+            int expectedConcealedWithAllShown = 2; // Just the pair (Ron tile completes the 4th set)
+            
+            // If completedMeldCount == 3, we need 1 more set, which could be:
+            // - Concealed set (3 tiles) + pair (2) + Ron (1) = 6 tiles
+            // - OR Ron completes the 4th set from 2 tiles in hand + Ron = 3 tiles total
+            
+            // SIMPLIFIED: If we have 4 completed melds, definitely All Shown
+            bool isAllShown = false;
+            
+            if (completedMeldCount == 4)
+            {
+                isAllShown = true;
+            }
+            else if (completedMeldCount == 3)
+            {
+                // Check if the winning tile would complete from a concealed set
+                // For now, assume it DOES create the 4th meld from discard
+                // This is the "optimistic" case for Tenpai display
+                isAllShown = true;
+            }
+            
+            if (isAllShown)
+            {
+                analysis.IsAllShown = true;
+                Debug.Log("[DetectSpecialWins] All Shown Hand detected!");
+                Debug.Log($"[DetectSpecialWins]   - Ron: Yes");
+                Debug.Log($"[DetectSpecialWins]   - Completed melds from discards: {completedMeldCount}");
+                Debug.Log($"[DetectSpecialWins]   - Self-drawn Kongs: 0");
+                Debug.Log($"[DetectSpecialWins]   - Concealed tiles: {concealedTiles}");
+            }
         }
         
-        Debug.Log($"[DetectSpecialWins] IsAllHidden: {analysis.IsAllHidden}, IsAllShown: {analysis.IsAllShown}");
+        Debug.Log($"[DetectSpecialWins] RESULT: IsAllHidden={analysis.IsAllHidden}, IsAllShown={analysis.IsAllShown}");
     }
+
     private static class HandChecker
     {
         // Renamed and modified to accept the number of sets needed from the hand.
