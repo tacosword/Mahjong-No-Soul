@@ -304,25 +304,8 @@ private bool IsSuitTile(int value)
         List<TileData> allTiles = new List<TileData>(handTiles);
         if (drawnTile != null) allTiles.Add(drawnTile);
         allTiles.AddRange(meldedKongs);
-    
-    // CRITICAL FIX: Include open melds (Chi/Pon/Kong from discards) in Pure Hand check
-    if (completedMelds != null)
-    {
-        foreach (var meld in completedMelds)
-        {
-            foreach (int sortValue in meld.TileSortValues)
-            {
-                TileData tileData = CreateTileDataFromSortValue(sortValue);
-                allTiles.Add(tileData);
-            }
-        }
-        Debug.Log($"[IsPureHand] Added {completedMelds.Count} open melds to purity check");
-    }
 
-    Debug.Log("--- Pure Hand Check Debug ---");
-    Debug.Log($"Total Functional Tiles (Hand + Drawn + ALL Melds): {allTiles.Count}");
-        
-        // ADD: Include tiles from completed melds (Chi/Pon/Kong from discards)
+        // CRITICAL: Include open melds (Chi/Pon/Kong from discards) in Pure Hand check
         if (completedMelds != null)
         {
             foreach (var meld in completedMelds)
@@ -333,62 +316,60 @@ private bool IsSuitTile(int value)
                     allTiles.Add(tileData);
                 }
             }
-            Debug.Log($"[IsPureHand] Added {completedMelds.Count} completed melds to check");
+            Debug.Log($"[IsPureHand] Added {completedMelds.Count} open melds to purity check");
         }
 
-    Debug.Log("--- Pure Hand Check Debug ---");
-    Debug.Log($"Total Functional Tiles (Hand + Drawn + Melds): {allTiles.Count}");
+        Debug.Log("--- Pure Hand Check Debug ---");
+        Debug.Log($"Total Tiles (Hand + Drawn + ALL Melds): {allTiles.Count}");
 
-    // 2. Filter out non-functional tiles (Flowers)
-    List<TileData> functionalTiles = allTiles.Where(t => 
-        t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower).ToList();
-    
-    if (functionalTiles.Count == 0) 
-    {
-        Debug.Log("Pure Hand Check: No functional tiles, returning false.");
+        // 2. Filter out non-functional tiles (Flowers)
+        List<TileData> functionalTiles = allTiles.Where(t => 
+            t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower).ToList();
+        
+        if (functionalTiles.Count == 0) 
+        {
+            Debug.Log("Pure Hand Check: No functional tiles, returning false.");
+            return false;
+        } 
+
+        // 3. Determine all unique functional suits present
+        var uniqueSuits = functionalTiles.Select(t => t.suit).Distinct().ToList();
+
+        Debug.Log($"Unique Functional Suits Found: {string.Join(", ", uniqueSuits.Select(s => s.ToString()))}");
+
+        // 4. Separate the numbered suits from the honor suits
+        var numberedSuits = uniqueSuits.Where(suit => 
+            suit == MahjongSuit.Circles || 
+            suit == MahjongSuit.Bamboos || 
+            suit == MahjongSuit.Characters).ToList();
+
+        Debug.Log($"Numbered Suits Count: {numberedSuits.Count}");
+        
+        // --- Core Logic: Strict Single Suit ---
+        // A Pure Hand must meet two strict criteria:
+        // 1. It must contain only one type of numbered suit (Count == 1).
+        // 2. The total number of unique functional suits must be exactly one (uniqueSuits.Count == 1).
+        //    If uniqueSuits.Count > 1, it means Honors or a second numbered suit is present.
+
+        if (numberedSuits.Count == 1 && uniqueSuits.Count == 1)
+        {
+            MahjongSuit primarySuit = numberedSuits.First();
+            Debug.Log($"Pure Hand Final Check: Strict Single Suit ({primarySuit}). Result: True");
+            return true;
+        }
+        
+        // --- Failure Cases ---
+        
+        // If numberedSuits.Count == 0, it is an All Honors hand (not a Pure Hand by your definition).
+        if (numberedSuits.Count == 0)
+        {
+            Debug.Log("Pure Hand Final Check: Found 0 Numbered Suits (All Honors). Not a Pure Hand. Returning false.");
+            return false;
+        }
+
+        // If uniqueSuits.Count > 1, it means a second numbered suit OR an Honor tile is present.
+        Debug.Log($"Pure Hand Final Check: Found {uniqueSuits.Count} unique suits. Must be 1. Returning false.");
         return false;
-    } 
-
-    // 3. Determine all unique functional suits present
-    var uniqueSuits = functionalTiles.Select(t => t.suit).Distinct().ToList();
-
-    Debug.Log($"Unique Functional Suits Found: {string.Join(", ", uniqueSuits.Select(s => s.ToString()))}");
-
-    // 4. Separate the numbered suits from the honor suits
-    var numberedSuits = uniqueSuits.Where(suit => 
-        suit == MahjongSuit.Circles || 
-        suit == MahjongSuit.Bamboos || 
-        suit == MahjongSuit.Characters).ToList();
-
-    Debug.Log($"Numbered Suits Count: {numberedSuits.Count}");
-    
-    // --- Core Logic FIX (Strict Single Suit) ---
-    // A Pure Hand must meet two strict criteria:
-    // 1. It must contain only one type of numbered suit (Count == 1).
-    // 2. The total number of unique functional suits must be exactly one (uniqueSuits.Count == 1).
-    //    If uniqueSuits.Count > 1, it means Honors or a second numbered suit is present.
-
-    if (numberedSuits.Count == 1 && uniqueSuits.Count == 1)
-    {
-        MahjongSuit primarySuit = numberedSuits.First();
-
-        // Final check result
-        Debug.Log($"Pure Hand Final Check: Strict Single Suit ({primarySuit}). Result: True");
-        return true;
-    }
-    
-    // --- Failure Cases ---
-    
-    // If numberedSuits.Count == 0, it is an All Honors hand (not a Pure Hand by your definition).
-    if (numberedSuits.Count == 0)
-    {
-         Debug.Log("Pure Hand Final Check: Found 0 Numbered Suits (All Honors). Not a Pure Hand. Returning false.");
-         return false;
-    }
-
-    // If uniqueSuits.Count > 1, it means a second numbered suit OR an Honor tile is present.
-    Debug.Log($"Pure Hand Final Check: Found {uniqueSuits.Count} unique suits. Must be 1. Returning false.");
-    return false;
     }
 
     /// <summary>
@@ -971,10 +952,21 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
         }
         
         // 4. Final Winning Determination
+        // CRITICAL FIX: Non-traditional Pure Hand is ONLY valid with NO open melds
+        // If you have open melds (Chi/Pon/Kong), you MUST win with traditional structure
+        // NOTE: completedMeldCount is already declared at line 842
+
         bool isNonTraditionalPureHandWin = result.IsPureHand && 
                                         !result.IsTraditionalWin && 
                                         !result.Is13OrphansWin && 
-                                        !result.Is7PairsWin;
+                                        !result.Is7PairsWin &&
+                                        completedMeldCount == 0;  // NEW: Must have NO open melds
+
+        Debug.Log($"[CheckForWinAndAnalyze] Non-traditional Pure Hand check:");
+        Debug.Log($"  - IsPureHand: {result.IsPureHand}");
+        Debug.Log($"  - IsTraditionalWin: {result.IsTraditionalWin}");
+        Debug.Log($"  - CompletedMelds: {completedMeldCount}");
+        Debug.Log($"  - Result: {isNonTraditionalPureHandWin}");
 
         result.IsWinningHand = result.IsTraditionalWin || 
                             result.Is13OrphansWin || 
@@ -1039,7 +1031,6 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
             // OR: 1 set (3 tiles) + Pair (2 tiles) + Ron tile = 6 concealed tiles (if only 2 melds)
             
             int concealedTiles = HandTiles.Count;
-            int expectedConcealedWithAllShown = 2; // Just the pair (Ron tile completes the 4th set)
             
             // If completedMeldCount == 3, we need 1 more set, which could be:
             // - Concealed set (3 tiles) + pair (2) + Ron (1) = 6 tiles
@@ -1373,8 +1364,16 @@ public int CalculateHandBonusScore(HandAnalysisResult analysis)
             }
         }
         
-        // Check Pure Hand as fallback
-        if (IsPureHandCustom(functionalTiles)) return true;
+        // Check Pure Hand as fallback - ONLY if NO completed melds
+        // Non-traditional Pure Hand requires a fully concealed hand
+        if (completedMeldCount == 0 && selfKongCount == 0)
+        {
+            if (IsPureHandCustom(functionalTiles))
+            {
+                Debug.Log($"[IsValidWithMelds] ✓ Non-traditional Pure Hand detected (fully concealed)");
+                return true;
+            }
+        }
         
         Debug.Log($"[IsValidWithMelds] No valid structure found");
         return false;

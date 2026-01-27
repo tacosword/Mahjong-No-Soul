@@ -185,13 +185,44 @@ public class NetworkedPlayerHand : NetworkBehaviour
     }
 
     /// <summary>
-    /// Draw a new tile (current player only - knows the value).
+    /// Receive a drawn tile from the server (current player only).
+    /// Handles flower tiles automatically by collecting them and requesting another tile.
     /// </summary>
     [TargetRpc]
     public void TargetDrawTile(NetworkConnection target, int tileValue)
     {
-        Debug.Log($"Drew tile: {tileValue}");
+        Debug.Log($"[TargetDrawTile] Drew tile: {tileValue}");
         
+        // CHECK IF IT'S A FLOWER TILE
+        if (IsFlowerTile(tileValue))
+        {
+            Debug.Log($"[TargetDrawTile] Tile {tileValue} is a FLOWER! Collecting and requesting replacement...");
+            
+            // Create TileData and add to flowers
+            TileData flowerData = CreateTileDataFromSortValue(tileValue);
+            logicHand.CollectFlower(flowerData);
+            
+            // Create visual tile
+            GameObject flowerTilePrefab = FindTilePrefabBySortValue(tileValue);
+            if (flowerTilePrefab != null)
+            {
+                GameObject flowerTileObj = Instantiate(flowerTilePrefab, handContainer);
+                flowerTileObj.transform.SetParent(handContainer);
+                flowerTiles.Add(flowerTileObj);
+                
+                Debug.Log($"[TargetDrawTile] Flower tile collected. Total flowers: {flowerTiles.Count}");
+            }
+            
+            // Reposition to show flower in flower area
+            RepositionTiles();
+            
+            // Request another tile from server (flower replacement)
+            CmdRequestFlowerReplacement(seatIndex);
+            
+            return; // Don't process as normal tile
+        }
+        
+        // NORMAL TILE PROCESSING
         TileData tileData = CreateTileDataFromSortValue(tileValue);
         logicHand.SetDrawnTile(tileData);
 
@@ -203,6 +234,20 @@ public class NetworkedPlayerHand : NetworkBehaviour
         if (isServer)
         {
             RpcShowDrawnTileForOthers(seatIndex);
+        }
+    }
+
+    /// <summary>
+    /// Request a flower replacement tile from the server.
+    /// </summary>
+    [Command]
+    private void CmdRequestFlowerReplacement(int playerIndex)
+    {
+        Debug.Log($"[CmdRequestFlowerReplacement] Player {playerIndex} requests flower replacement");
+        
+        if (NetworkedGameManager.Instance != null)
+        {
+            NetworkedGameManager.Instance.DrawFlowerReplacement(playerIndex);
         }
     }
     
@@ -1165,7 +1210,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
         {
             Debug.Log($"[PlayerHand] Positioning {flowerTiles.Count} flower tiles");
             
-            // Position flower tiles
+            // Position flower tiles in rows of 4
             if (flowerTiles.Count > 0)
             {
                 Debug.Log($"[PlayerHand] Positioning {flowerTiles.Count} flowers");
@@ -1182,19 +1227,29 @@ public class NetworkedPlayerHand : NetworkBehaviour
                 
                 // Flower offset from the 14th tile position
                 float flowerStartX = tile14X - 0.64f;
-                float flowerZ = handStartPosition.z + 0.29f;
+                float flowerBaseZ = handStartPosition.z + 0.29f;
+                
+                // Rows of 4 flowers with vertical spacing of 0.16
+                int flowersPerRow = 4;
+                float flowerRowSpacing = 0.16f;
                 
                 for (int i = 0; i < flowerTiles.Count; i++)
                 {
                     if (flowerTiles[i] == null) continue;
                     
-                    float xPos = flowerStartX + i * flowerTileSpacing;
-                    Vector3 flowerPos = new Vector3(xPos, handStartPosition.y, flowerZ);
+                    // Calculate row and column
+                    int row = i / flowersPerRow;
+                    int col = i % flowersPerRow;
+                    
+                    // Calculate position
+                    float xPos = flowerStartX + col * flowerTileSpacing;
+                    float zPos = flowerBaseZ + row * flowerRowSpacing;
+                    Vector3 flowerPos = new Vector3(xPos, handStartPosition.y, zPos);
                     
                     flowerTiles[i].transform.localPosition = flowerPos;
                     flowerTiles[i].transform.localRotation = Quaternion.Euler(0f, 0f, 0f);
                     
-                    Debug.Log($"[PlayerHand] Positioned flower {i} at {flowerPos}");
+                    Debug.Log($"[PlayerHand] Positioned flower {i} (row {row}, col {col}) at {flowerPos}");
                 }
             }
         }
@@ -3703,5 +3758,26 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
             renderer.material.color = Color.white;
             renderer.material.SetFloat("_Emission", 0.0f);
         }
+    }
+
+    /// <summary>
+    /// Check if a tile sort value represents a flower tile.
+    /// </summary>
+    private bool IsFlowerTile(int sortValue)
+    {
+        // Flower tiles are in the 600-799 range
+        // RedFlowers: 601-604 (corresponding to suits 6xx)
+        // BlueFlower: 701-704 (corresponding to suits 7xx)
+        int suitValue = sortValue / 100;
+        return suitValue == 6 || suitValue == 7;
+    }
+
+    /// <summary>
+    /// Check if a TileData object is a flower.
+    /// </summary>
+    private bool IsFlowerTile(TileData tile)
+    {
+        if (tile == null) return false;
+        return tile.suit == MahjongSuit.RedFlowers || tile.suit == MahjongSuit.BlueFlower;
     }
 }

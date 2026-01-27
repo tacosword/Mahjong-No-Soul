@@ -1406,4 +1406,34 @@ public class NetworkedGameManager : NetworkBehaviour
     {
         return spawnedDiscardTiles;
     }
+
+    /// <summary>
+    /// Draw a replacement tile for a flower (recursive until non-flower is drawn).
+    /// </summary>
+    [Server]
+    public void DrawFlowerReplacement(int playerIndex)
+    {
+        Debug.Log($"[GameManager] Drawing flower replacement for Player {playerIndex}");
+        
+        if (playerIndex < 0 || playerIndex >= players.Count)
+        {
+            Debug.LogError($"[GameManager] Invalid player index: {playerIndex}");
+            return;
+        }
+        
+        if (wallTiles.Count == 0)
+        {
+            Debug.LogWarning("[GameManager] Wall is empty! Cannot draw replacement tile.");
+            return;
+        }
+        
+        NetworkPlayer player = players[playerIndex];
+        int replacementTile = DrawTileFromWall();
+        
+        Debug.Log($"[GameManager] Drew replacement tile {replacementTile} for Player {playerIndex}");
+        
+        // Send to player (TargetDrawTile will handle if it's another flower recursively)
+        NetworkedPlayerHand hand = playerHands[playerIndex];
+        hand.TargetDrawTile(player.connectionToClient, replacementTile);
+    }
 }
