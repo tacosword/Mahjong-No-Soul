@@ -18,8 +18,8 @@ public class PlayerHand : MonoBehaviour
     private List<TileData> flowerTiles = new List<TileData>();
 
     // ... (Existing Constants and Hand Management Methods remain the same) ...
-    public const int PLAYER_WIND_SORT_VALUE = 402; 
-    public const int ROUND_WIND_SORT_VALUE = 401; 
+    public static int PLAYER_WIND_SORT_VALUE = 402; 
+    public static int ROUND_WIND_SORT_VALUE = 401;
     public readonly int[] DRAGON_SORT_VALUES = { 501, 502, 503 };
     
     public List<TileData> HandTiles => handTiles;

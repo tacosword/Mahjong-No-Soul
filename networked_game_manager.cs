@@ -38,6 +38,15 @@ public class NetworkedGameManager : NetworkBehaviour
     [SyncVar]
     private bool gameStarted = false;
 
+    // Round management
+    [SyncVar]
+    private int roundWind = 401; // East=401, South=402, West=403, North=404
+    
+    [SyncVar]
+    private int consecutiveEastWins = 0;
+    
+    private int[] playerSeats = new int[4]; // Maps player index to seat position
+
     // Server-only data
     private List<int> wallTiles = new List<int>();
     private Dictionary<int, NetworkedPlayerHand> playerHands = new Dictionary<int, NetworkedPlayerHand>();
@@ -80,6 +89,16 @@ public class NetworkedGameManager : NetworkBehaviour
         }
 
         players = new List<NetworkPlayer>(gamePlayers);
+
+        // Initialize seat assignments (1:1 mapping initially)
+        for (int i = 0; i < players.Count; i++)
+        {
+            playerSeats[i] = i;
+        }
+        roundWind = 401; // Start at East
+        consecutiveEastWins = 0;
+        Debug.Log("[Game] Seat assignments initialized - all players at their starting seats");
+
         Debug.Log($"Starting Mahjong game with {players.Count} players");
         
         // Verify tile prefabs are assigned
@@ -590,17 +609,17 @@ public class NetworkedGameManager : NetworkBehaviour
     /// <summary>
     /// Player declared Mahjong (Tsumo).
     /// </summary>
-[Server]
-    public void PlayerDeclaredMahjong(int playerIndex, HandAnalysisResult analysis, int score, List<int> tileSortValues, List<string> flowerMessages)
+    [Server]
+    public void PlayerDeclaredMahjong(int playerIndex, HandAnalysisResult analysis, int score, List<int> winningTiles)
     {
-        Debug.Log($"[GameManager] ===== PLAYER DECLARED MAHJONG (TSUMO) =====");
-        Debug.Log($"[GameManager] Player index: {playerIndex}");
-        Debug.Log($"[GameManager] Score: {score}");
-        Debug.Log($"[GameManager] Flower messages count: {flowerMessages?.Count ?? 0}");
         NetworkPlayer winner = players[playerIndex];
         Debug.Log($"Player {playerIndex} ({winner.Username}) wins with {score} points!");
 
-        RpcShowWinScreen(playerIndex, winner.Username, score, analysis, tileSortValues, flowerMessages);
+        // ADD THESE TWO LINES:
+        int winnerSeatIndex = playerSeats[playerIndex];
+        HandleWin(winnerSeatIndex);
+
+        RpcShowWinScreen(playerIndex, winner.Username, score, analysis, winningTiles, new List<string>());
     }
 
     /// <summary>
@@ -1435,5 +1454,227 @@ public class NetworkedGameManager : NetworkBehaviour
         // Send to player (TargetDrawTile will handle if it's another flower recursively)
         NetworkedPlayerHand hand = playerHands[playerIndex];
         hand.TargetDrawTile(player.connectionToClient, replacementTile);
+    }
+
+    // ===== ROUND-ROBIN SYSTEM =====
+    
+    /// <summary>
+    /// Start a new round after a win.
+    /// </summary>
+    [Server]
+    public void StartNewRound()
+    {
+        Debug.Log("[Game] ========== STARTING NEW ROUND ==========");
+        
+        // Clear previous round data
+        ClearRoundData();
+        
+        // Reinitialize game state
+        InitializeWall();
+        DealInitialHands();
+        
+        currentPlayerIndex = 0;
+        gameStarted = true;
+        
+        // Notify all clients
+        RpcHideResultScreen();
+        RpcGameStarted();
+        StartPlayerTurn(currentPlayerIndex);
+        
+        Debug.Log("[Game] ========== NEW ROUND STARTED ==========");
+    }
+    
+    /// <summary>
+    /// Handle win and determine if seats should rotate.
+    /// </summary>
+    [Server]
+    private void HandleWin(int winnerSeatIndex)
+    {
+        Debug.Log($"[Game] HandleWin called - Winner seat: {winnerSeatIndex}");
+        
+        bool needsRotation = false;
+        
+        if (winnerSeatIndex == 0)
+        {
+            consecutiveEastWins++;
+            Debug.Log($"[Game] East (Seat 0) wins - consecutive count: {consecutiveEastWins}/3");
+            
+            if (consecutiveEastWins >= 3)
+            {
+                Debug.Log("[Game] East won 3 times in a row - forcing rotation");
+                needsRotation = true;
+                consecutiveEastWins = 0;
+            }
+        }
+        else
+        {
+            Debug.Log($"[Game] Non-East player (Seat {winnerSeatIndex}) wins - rotation required");
+            needsRotation = true;
+            consecutiveEastWins = 0;
+        }
+        
+        if (needsRotation)
+        {
+            RotatePlayerSeats();
+        }
+        else
+        {
+            Debug.Log("[Game] No rotation - East retains position");
+        }
+    }
+    
+    /// <summary>
+    /// Rotate all players clockwise by one seat.
+    /// </summary>
+    [Server]
+    private void RotatePlayerSeats()
+    {
+        Debug.Log("[Game] ===== ROTATING PLAYER SEATS =====");
+        
+        // Log current seats
+        for (int i = 0; i < players.Count; i++)
+        {
+            Debug.Log($"[Game] BEFORE: Player {i} ({players[i].Username}) -> Seat {playerSeats[i]}");
+        }
+        
+        // Create new seat assignments (everyone moves up one seat)
+        int[] newSeats = new int[4];
+        for (int i = 0; i < players.Count; i++)
+        {
+            int currentSeat = playerSeats[i];
+            newSeats[i] = (currentSeat + 1) % players.Count;
+        }
+        playerSeats = newSeats;
+        
+        // Log new seats
+        for (int i = 0; i < players.Count; i++)
+        {
+            Debug.Log($"[Game] AFTER: Player {i} ({players[i].Username}) -> Seat {playerSeats[i]}");
+        }
+        
+        // Check if we've completed a full rotation
+        bool fullRotation = true;
+        for (int i = 0; i < players.Count; i++)
+        {
+            if (playerSeats[i] != i)
+            {
+                fullRotation = false;
+                break;
+            }
+        }
+        
+        if (fullRotation)
+        {
+            Debug.Log("[Game] FULL ROTATION COMPLETED - advancing round wind");
+            AdvanceRoundWind();
+        }
+        
+        // Update all players with their new seats and winds
+        for (int i = 0; i < players.Count; i++)
+        {
+            int newSeat = playerSeats[i];
+            players[i].SetPlayerIndex(newSeat);
+            
+            // Calculate winds: East=401, South=402, West=403, North=404
+            int seatWind = 401 + newSeat;
+            
+            Debug.Log($"[Game] Updating Player {i}: Seat={newSeat}, SeatWind={seatWind}, RoundWind={roundWind}");
+            RpcUpdatePlayerWind(players[i].connectionToClient, seatWind, roundWind);
+        }
+        
+        Debug.Log("[Game] ===== SEAT ROTATION COMPLETE =====");
+    }
+    
+    /// <summary>
+    /// Advance round wind after full rotation.
+    /// </summary>
+    [Server]
+    private void AdvanceRoundWind()
+    {
+        int oldWind = roundWind;
+        
+        switch (roundWind)
+        {
+            case 401: roundWind = 402; break; // East -> South
+            case 402: roundWind = 403; break; // South -> West
+            case 403: roundWind = 404; break; // West -> North
+            case 404: roundWind = 401; break; // North -> East
+        }
+        
+        Debug.Log($"[Game] Round wind advanced: {oldWind} -> {roundWind}");
+    }
+    
+    /// <summary>
+    /// Clear all data from previous round.
+    /// </summary>
+    [Server]
+    private void ClearRoundData()
+    {
+        Debug.Log("[Game] Clearing round data...");
+        
+        // Clear discard tracking
+        foreach (var kvp in playerDiscards)
+        {
+            kvp.Value.Clear();
+        }
+        playerDiscardCounts.Clear();
+        
+        // Reinitialize discard tracking
+        for (int i = 0; i < 4; i++)
+        {
+            if (!playerDiscards.ContainsKey(i))
+            {
+                playerDiscards[i] = new List<int>();
+            }
+            playerDiscardCounts[i] = 0;
+        }
+        
+        // Clear player hands
+        foreach (var hand in playerHands.Values)
+        {
+            if (hand != null)
+            {
+                hand.ClearHand();
+            }
+        }
+        
+        // Clear spawned discard tiles
+        foreach (var kvp in spawnedDiscardTiles)
+        {
+            foreach (GameObject tile in kvp.Value)
+            {
+                if (tile != null)
+                {
+                    NetworkServer.Destroy(tile);
+                }
+            }
+        }
+        spawnedDiscardTiles.Clear();
+        
+        Debug.Log("[Game] Round data cleared");
+    }
+    
+    /// <summary>
+    /// Update player wind values on client.
+    /// </summary>
+    [TargetRpc]
+    private void RpcUpdatePlayerWind(NetworkConnection target, int seatWind, int roundWindValue)
+    {
+        PlayerHand.PLAYER_WIND_SORT_VALUE = seatWind;
+        PlayerHand.ROUND_WIND_SORT_VALUE = roundWindValue;
+        Debug.Log($"[Client] Winds updated - Seat: {seatWind}, Round: {roundWindValue}");
+    }
+    
+    /// <summary>
+    /// Hide result screen on all clients.
+    /// </summary>
+    [ClientRpc]
+    private void RpcHideResultScreen()
+    {
+        ResultScreenUI resultScreen = FindFirstObjectByType<ResultScreenUI>();
+        if (resultScreen != null)
+        {
+            resultScreen.Hide();
+        }
     }
 }

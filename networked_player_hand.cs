@@ -133,6 +133,70 @@ public class NetworkedPlayerHand : NetworkBehaviour
     {
         seatIndex = index;
     }
+    
+    /// <summary>
+    /// Clear all hand data for new round.
+    /// </summary>
+    public void ClearHand()
+    {
+        Debug.Log($"[Hand] Clearing hand for seat {seatIndex}");
+        
+        // Destroy all spawned tile GameObjects
+        foreach (GameObject tile in spawnedTiles)
+        {
+            if (tile != null) Destroy(tile);
+        }
+        spawnedTiles.Clear();
+        
+        // Destroy drawn tile
+        if (drawnTile != null)
+        {
+            Destroy(drawnTile);
+            drawnTile = null;
+        }
+        
+        // Destroy flower tiles
+        foreach (GameObject flower in flowerTiles)
+        {
+            if (flower != null) Destroy(flower);
+        }
+        flowerTiles.Clear();
+        
+        // Destroy melded kong tiles
+        foreach (GameObject kong in meldedKongTiles)
+        {
+            if (kong != null) Destroy(kong);
+        }
+        meldedKongTiles.Clear();
+        
+        // Clear logic hand
+        if (logicHand != null)
+        {
+            logicHand.HandTiles.Clear();
+            logicHand.FlowerTiles.Clear();
+            logicHand.MeldedKongs.Clear();
+            logicHand.SetDrawnTile(null);
+        }
+        
+        // Reset state flags
+        canDeclareWin = false;
+        canDeclareKong = false;
+        availableKongValues.Clear();
+        nextKongSetIndex = 0;
+        _isInChiSelectionMode = false;
+        currentChiOptions.Clear();        
+        // Hide UI buttons
+        if (winButtonUI != null) winButtonUI.SetActive(false);
+        if (kongButtonUI != null) kongButtonUI.SetActive(false);
+        
+        // Hide interrupt UI if it exists
+        if (interruptUI != null)
+        {
+            interruptUI.gameObject.SetActive(false);
+        }
+        
+        Debug.Log($"[Hand] Hand cleared for seat {seatIndex}");
+    }
 
     /// <summary>
     /// Set the hand container (sent by server).
@@ -1158,8 +1222,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
         
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkedGameManager.Instance.PlayerDeclaredMahjong(playerIndex, analysis, score, tileSortValues, flowerMessages);
-        }
+            NetworkedGameManager.Instance.PlayerDeclaredMahjong(playerIndex, analysis, score, tileSortValues);        }
     }
 
     /// <summary>

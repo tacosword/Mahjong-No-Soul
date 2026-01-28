@@ -17,7 +17,11 @@ public class ResultScreenUI : MonoBehaviour
     public TextMeshProUGUI totalScoreText;
     
     [Header("2D Tile Display")]
-    public WinningHandDisplay2D tileDisplay2D; // Drag the WinningHandDisplay2D component here
+    public WinningHandDisplay2D tileDisplay2D;
+    
+    [Header("Action Buttons")]
+    public Button continueButton;
+    public Button backButton;
 
     void Start()
     {
@@ -39,6 +43,29 @@ public class ResultScreenUI : MonoBehaviour
         Debug.Log($"[ResultScreen] scoreDetailsText assigned: {scoreDetailsText != null}");
         Debug.Log($"[ResultScreen] totalScoreText assigned: {totalScoreText != null}");
         Debug.Log($"[ResultScreen] tileDisplay2D assigned: {tileDisplay2D != null}");
+        
+        // Setup button listeners - REMOVE ALL EXISTING LISTENERS FIRST
+        if (continueButton != null)
+        {
+            continueButton.onClick.RemoveAllListeners();
+            continueButton.onClick.AddListener(OnContinuePressed);
+            Debug.Log("[ResultScreen] ✓ Continue button listener added → OnContinuePressed");
+        }
+        else
+        {
+            Debug.LogWarning("[ResultScreen] continueButton is NULL!");
+        }
+        
+        if (backButton != null)
+        {
+            backButton.onClick.RemoveAllListeners();
+            backButton.onClick.AddListener(OnRestartPressed);
+            Debug.Log("[ResultScreen] ✓ Back button listener added → OnRestartPressed");
+        }
+        else
+        {
+            Debug.LogWarning("[ResultScreen] backButton is NULL!");
+        }
     }
 
     /// <summary>
@@ -69,6 +96,25 @@ public class ResultScreenUI : MonoBehaviour
         Debug.Log($"[ResultScreen] Activating result panel: {resultPanel.name}");
         resultPanel.SetActive(true);
         
+        // Show/hide buttons based on server status
+        if (continueButton != null)
+        {
+            bool isServer = NetworkServer.active;
+            continueButton.gameObject.SetActive(isServer);
+            Debug.Log($"[ResultScreen] Continue button visibility: {isServer} (NetworkServer.active={NetworkServer.active})");
+            
+            if (isServer)
+            {
+                Debug.Log($"[ResultScreen] ✓✓✓ CONTINUE BUTTON IS VISIBLE ✓✓✓");
+            }
+        }
+        
+        if (backButton != null)
+        {
+            backButton.gameObject.SetActive(true);
+            Debug.Log("[ResultScreen] Back button visible: true");
+        }
+        
         Debug.Log($"[ResultScreen] Result panel active: {resultPanel.activeSelf}");
 
         // Set win type
@@ -85,7 +131,6 @@ public class ResultScreenUI : MonoBehaviour
         // Build score details
         string details = BuildScoreDetails(analysis, flowerMessages);
         Debug.Log($"[ResultScreen] Score details built: {details.Length} characters");
-        Debug.Log($"[ResultScreen] Score details content:\n{details}");
 
         // Set score details text
         if (scoreDetailsText != null)
@@ -112,7 +157,6 @@ public class ResultScreenUI : MonoBehaviour
         // Display the winning hand tiles as 2D sprites
         if (tileDisplay2D != null)
         {
-            // Pass tile sort values if available, otherwise use winner's GameObjects
             tileDisplay2D.DisplayWinningHand(winnerSeatIndex, winningTileSortValues);
         }
         else
@@ -128,16 +172,6 @@ public class ResultScreenUI : MonoBehaviour
     /// </summary>
     private string BuildScoreDetails(HandAnalysisResult analysis, List<string> flowerMessages = null)
     {
-        Debug.Log("[BuildScoreDetails] Starting score breakdown...");
-        Debug.Log($"[BuildScoreDetails] IsPureHand: {analysis.IsPureHand}");
-        Debug.Log($"[BuildScoreDetails] IsTraditionalWin: {analysis.IsTraditionalWin}");
-        Debug.Log($"[BuildScoreDetails] Is13OrphansWin: {analysis.Is13OrphansWin}");
-        Debug.Log($"[BuildScoreDetails] Is7PairsWin: {analysis.Is7PairsWin}");
-        Debug.Log($"[BuildScoreDetails] IsHalfHand: {analysis.IsHalfHand}");
-        Debug.Log($"[BuildScoreDetails] SequencesCount: {analysis.SequencesCount}");
-        Debug.Log($"[BuildScoreDetails] TripletsCount: {analysis.TripletsCount}");
-        Debug.Log($"[BuildScoreDetails] FlowerCount: {analysis.FlowerCount}");
-        
         string details = "Base Win: +1\n";
         
         // === WIN TYPE & KONG BONUSES (Display these first) ===
@@ -196,34 +230,27 @@ public class ResultScreenUI : MonoBehaviour
         if (analysis.IsPureHand && !analysis.IsTraditionalWin)
         {
             details += "Pure Hand (Non-Traditional): +3\n";
-            Debug.Log("[BuildScoreDetails] Added Pure Hand bonus");
         }
         // Traditional Win bonuses
         else if (analysis.IsTraditionalWin)
         {
-            Debug.Log("[BuildScoreDetails] Processing traditional win bonuses...");
-            
             if (analysis.IsPureHand)
             {
                 details += "True Pure Hand: +4\n";
-                Debug.Log("[BuildScoreDetails] Added True Pure Hand bonus");
             }
             else if (analysis.IsHalfHand)
             {
                 details += "Half Hand: +2\n";
-                Debug.Log("[BuildScoreDetails] Added Half Hand bonus");
             }
 
             if (analysis.TripletsCount == 0 && analysis.SequencesCount == 4)
             {
                 details += "All Sequences: +1\n";
-                Debug.Log("[BuildScoreDetails] Added All Sequences bonus");
             }
 
             if (analysis.SequencesCount == 0 && analysis.TripletsCount == 4)
             {
                 details += "All Triplets: +2\n";
-                Debug.Log("[BuildScoreDetails] Added All Triplets bonus");
             }
 
             // Honor tile bonuses
@@ -231,7 +258,6 @@ public class ResultScreenUI : MonoBehaviour
             if (!string.IsNullOrEmpty(honorBonuses))
             {
                 details += honorBonuses;
-                Debug.Log($"[BuildScoreDetails] Added honor bonuses:\n{honorBonuses}");
             }
         }
 
@@ -239,23 +265,19 @@ public class ResultScreenUI : MonoBehaviour
         if (analysis.Is13OrphansWin)
         {
             details += "Thirteen Orphans: +8\n";
-            Debug.Log("[BuildScoreDetails] Added Thirteen Orphans bonus");
         }
 
         if (analysis.Is7PairsWin)
         {
             details += "Seven Pairs: +3\n";
-            Debug.Log("[BuildScoreDetails] Added Seven Pairs bonus");
         }
 
         // Flowers
         if (analysis.FlowerCount > 0)
         {
             details += $"Flowers ({analysis.FlowerCount}): +{analysis.FlowerCount}\n";
-            Debug.Log($"[BuildScoreDetails] Added Flower bonus: {analysis.FlowerCount}");
         }
 
-        Debug.Log($"[BuildScoreDetails] Final details:\n{details}");
         return details;
     }
 
@@ -319,11 +341,45 @@ public class ResultScreenUI : MonoBehaviour
     }
 
     /// <summary>
-    /// Called when the Reset button is pressed.
+    /// Called when Continue button is pressed (Server only).
+    /// </summary>
+    public void OnContinuePressed()
+    {
+        Debug.Log("[ResultScreen] ========================================");
+        Debug.Log("[ResultScreen] CONTINUE BUTTON PRESSED!!!");
+        Debug.Log("[ResultScreen] ========================================");
+        
+        if (!NetworkServer.active)
+        {
+            Debug.LogWarning("[ResultScreen] Only server can continue!");
+            return;
+        }
+        
+        Debug.Log("[ResultScreen] Server check passed - starting new round");
+        Hide();
+        
+        if (NetworkedGameManager.Instance != null)
+        {
+            Debug.Log("[ResultScreen] Calling NetworkedGameManager.Instance.StartNewRound()");
+            NetworkedGameManager.Instance.StartNewRound();
+            Debug.Log("[ResultScreen] StartNewRound() called successfully");
+        }
+        else
+        {
+            Debug.LogError("[ResultScreen] NetworkedGameManager.Instance is NULL!");
+        }
+        
+        Debug.Log("[ResultScreen] OnContinuePressed() complete");
+    }
+
+    /// <summary>
+    /// Called when the Back/Restart button is pressed.
     /// </summary>
     public void OnRestartPressed()
     {
-        Debug.Log("[ResultScreen] Restart button pressed");
+        Debug.Log("[ResultScreen] ========================================");
+        Debug.Log("[ResultScreen] BACK BUTTON PRESSED!!!");
+        Debug.Log("[ResultScreen] ========================================");
         
         Hide();
         
