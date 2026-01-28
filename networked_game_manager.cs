@@ -46,6 +46,7 @@ public class NetworkedGameManager : NetworkBehaviour
     private int consecutiveEastWins = 0;
     
     private int[] playerSeats = new int[4]; // Maps player index to seat position
+    private bool isReloadingForNewRound = false; // Flag to prevent double initialization
 
     // Server-only data
     private List<int> wallTiles = new List<int>();
@@ -81,24 +82,41 @@ public class NetworkedGameManager : NetworkBehaviour
         Debug.Log("=== NetworkedGameManager.StartGame() CALLED ===");
         Debug.Log($"gameStarted flag: {gameStarted}");
         Debug.Log($"Players received: {gamePlayers?.Count ?? 0}");
+        Debug.Log($"isReloadingForNewRound flag: {isReloadingForNewRound}");
         
-        if (gameStarted)
+        // If this is a reload for a new round, skip re-initialization of player list and seats
+        if (!isReloadingForNewRound)
         {
-            Debug.LogWarning("Game already started!");
-            return;
+            // First game - initialize everything
+            if (gameStarted)
+            {
+                Debug.LogWarning("Game already started!");
+                return;
+            }
+    
+            players = new List<NetworkPlayer>(gamePlayers);
+    
+            // Initialize seat assignments (1:1 mapping initially)
+            for (int i = 0; i < players.Count; i++)
+            {
+                playerSeats[i] = i;
+            }
+            roundWind = 401; // Start at East
+            consecutiveEastWins = 0;
+            Debug.Log("[Game] Seat assignments initialized - all players at their starting seats");
+    
         }
-
-        players = new List<NetworkPlayer>(gamePlayers);
-
-        // Initialize seat assignments (1:1 mapping initially)
-        for (int i = 0; i < players.Count; i++)
+        else
         {
-            playerSeats[i] = i;
+            Debug.Log("[Game] Continuing existing game with seat rotation preserved");
+            Debug.Log($"[Game] Preserved seats: [{string.Join(", ", playerSeats)}]");
+            Debug.Log($"[Game] Round wind: {roundWind}, Consecutive East wins: {consecutiveEastWins}");
+            isReloadingForNewRound = false; // Reset flag
+            
+            // Reset gameStarted flag for new round
+            gameStarted = false;
         }
-        roundWind = 401; // Start at East
-        consecutiveEastWins = 0;
-        Debug.Log("[Game] Seat assignments initialized - all players at their starting seats");
-
+        
         Debug.Log($"Starting Mahjong game with {players.Count} players");
         
         // Verify tile prefabs are assigned
@@ -211,18 +229,25 @@ public class NetworkedGameManager : NetworkBehaviour
                 hand = player.gameObject.AddComponent<NetworkedPlayerHand>();
             }
 
-            hand.SetSeatIndex(i);
+            // CRITICAL: Use seat position from playerSeats array, not player index
+            int seatPosition = playerSeats[i];
+            hand.SetSeatIndex(seatPosition);
             
-            // Check hand positions
-            if (i < playerHandPositions.Length && playerHandPositions[i] != null)
+            // Update the player's current seat position (syncs to all clients)
+            player.SetCurrentSeatPosition(seatPosition);
+            
+            Debug.Log($"[Game] Player {i} ({player.Username}) assigned to Seat {seatPosition}");
+            
+            // Check hand positions - use SEAT POSITION for container
+            if (seatPosition < playerHandPositions.Length && playerHandPositions[seatPosition] != null)
             {
-                string containerPath = GetPathToTransform(playerHandPositions[i]);
-                Debug.Log($"[Game] Setting hand container for Player {i}: {containerPath}");
+                string containerPath = GetPathToTransform(playerHandPositions[seatPosition]);
+                Debug.Log($"[Game] Setting hand container for Seat {seatPosition}: {containerPath}");
                 hand.TargetSetHandContainer(player.connectionToClient, containerPath);
             }
             else
             {
-                Debug.LogError($"[Game] âœ— Hand position {i} is NULL or out of bounds!");
+                Debug.LogError($"[Game] ✗ Hand position {seatPosition} is NULL or out of bounds!");
             }
 
             playerHands[i] = hand;
@@ -1465,23 +1490,21 @@ public class NetworkedGameManager : NetworkBehaviour
     public void StartNewRound()
     {
         Debug.Log("[Game] ========== STARTING NEW ROUND ==========");
+        Debug.Log($"[Game] Current seat assignments: [{string.Join(", ", playerSeats)}]");
+        Debug.Log($"[Game] Round wind: {roundWind}, Consecutive East wins: {consecutiveEastWins}");
         
-        // Clear previous round data
-        ClearRoundData();
+        // Set flag to prevent double initialization
+        isReloadingForNewRound = true;
         
-        // Reinitialize game state
-        InitializeWall();
-        DealInitialHands();
-        
-        currentPlayerIndex = 0;
-        gameStarted = true;
-        
-        // Notify all clients
+        // Notify all clients to hide result screen
         RpcHideResultScreen();
-        RpcGameStarted();
-        StartPlayerTurn(currentPlayerIndex);
         
-        Debug.Log("[Game] ========== NEW ROUND STARTED ==========");
+        // Reload the Game scene (this clears ALL tiles automatically)
+        Debug.Log("[Game] Reloading Game scene to clear all assets...");
+        NetworkManager.singleton.ServerChangeScene("Game");
+        
+        // Note: Game will reinitialize in OnSceneLoaded callback
+        Debug.Log("[Game] ========== SCENE RELOAD INITIATED ==========");
     }
     
     /// <summary>
@@ -1492,9 +1515,27 @@ public class NetworkedGameManager : NetworkBehaviour
     {
         Debug.Log($"[Game] HandleWin called - Winner seat: {winnerSeatIndex}");
         
+        // CRITICAL: Find which PLAYER won (not just seat)
+        // We need to know if the East player won
+        int winnerPlayerIndex = -1;
+        for (int i = 0; i < players.Count; i++)
+        {
+            if (playerSeats[i] == winnerSeatIndex)
+            {
+                winnerPlayerIndex = i;
+                break;
+            }
+        }
+        
+        Debug.Log($"[Game] Winner: Player {winnerPlayerIndex} at Seat {winnerSeatIndex}");
+        
+        // Check if East wind player won
+        // East is always at Seat 0 (physical position)
+        bool eastPlayerWon = (winnerSeatIndex == 0);
+        
         bool needsRotation = false;
         
-        if (winnerSeatIndex == 0)
+        if (eastPlayerWon)
         {
             consecutiveEastWins++;
             Debug.Log($"[Game] East (Seat 0) wins - consecutive count: {consecutiveEastWins}/3");
@@ -1521,6 +1562,12 @@ public class NetworkedGameManager : NetworkBehaviour
         {
             Debug.Log("[Game] No rotation - East retains position");
         }
+        
+        // Debug: Show post-win state
+        Debug.Log($"[Game] Post-win state:");
+        Debug.Log($"[Game]   - Round wind: {roundWind}");
+        Debug.Log($"[Game]   - Consecutive East wins: {consecutiveEastWins}");
+        Debug.Log($"[Game]   - Seat assignments: [{string.Join(", ", playerSeats)}]");
     }
     
     /// <summary>
@@ -1537,14 +1584,20 @@ public class NetworkedGameManager : NetworkBehaviour
             Debug.Log($"[Game] BEFORE: Player {i} ({players[i].Username}) -> Seat {playerSeats[i]}");
         }
         
-        // Create new seat assignments (everyone moves up one seat)
+        // CRITICAL FIX: Rotate through ALL 4 seats, not just active player count
+        // Create new seat assignments (everyone moves up one seat, wrapping at 4)
         int[] newSeats = new int[4];
         for (int i = 0; i < players.Count; i++)
         {
             int currentSeat = playerSeats[i];
-            newSeats[i] = (currentSeat + 1) % players.Count;
+            newSeats[i] = (currentSeat + 1) % 4;  // CHANGED: % 4 instead of % players.Count
         }
-        playerSeats = newSeats;
+        
+        // Copy back only the active player seats
+        for (int i = 0; i < players.Count; i++)
+        {
+            playerSeats[i] = newSeats[i];
+        }
         
         // Log new seats
         for (int i = 0; i < players.Count; i++)

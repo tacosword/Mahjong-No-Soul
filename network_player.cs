@@ -16,11 +16,16 @@ public class NetworkPlayer : NetworkBehaviour
 
     [SyncVar]
     private bool isReady = false;
+    
+    // Current seat position (changes with rotation)
+    [SyncVar(hook = nameof(OnSeatPositionChanged))]
+    private int currentSeatPosition = -1;
 
     // Public accessors
     public string Username => username;
     public int PlayerIndex => playerIndex;
     public bool IsReady => isReady;
+    public int CurrentSeatPosition => currentSeatPosition;
     
     // In network_player.cs - Awake() method
     void Awake()
@@ -121,6 +126,13 @@ public class NetworkPlayer : NetworkBehaviour
     {
         playerIndex = index;
     }
+    
+    [Server]
+    public void SetCurrentSeatPosition(int seat)
+    {
+        currentSeatPosition = seat;
+        Debug.Log($"[Server] Set {Username}'s seat position to {seat}");
+    }
 
     #endregion
 
@@ -137,6 +149,26 @@ public class NetworkPlayer : NetworkBehaviour
         if (NetworkLobbyManager.Instance != null)
         {
             NetworkLobbyManager.Instance.UpdatePlayerList();
+        }
+    }
+    
+    private void OnSeatPositionChanged(int oldSeat, int newSeat)
+    {
+        Debug.Log($"[NetworkPlayer] {Username} seat changed: {oldSeat} → {newSeat}");
+        
+        // If this is the local player and we're in the Game scene, update camera
+        if (isOwned && UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "Game")
+        {
+            UpdateCameraForSeat(newSeat);
+        }
+    }
+    
+    private void UpdateCameraForSeat(int seat)
+    {
+        CameraController camController = FindFirstObjectByType<CameraController>();
+        if (camController != null)
+        {
+            camController.SetupCameraForSeat(seat);
         }
     }
 
@@ -177,4 +209,25 @@ private void SetupPlayerHandInGame()
         playerHand.handContainer = handContainer.transform;
     }
 }
+
+    /// <summary>
+    /// Client requests server to start a new round (Command).
+    /// </summary>
+    [Command]
+    public void CmdRequestNewRound()
+    {
+        // Only host can start new rounds
+        if (!NetworkServer.active)
+        {
+            Debug.LogWarning($"[NetworkPlayer] Player {Username} tried to start round but not host");
+            return;
+        }
+        
+        Debug.Log($"[NetworkPlayer] {Username} requested new round");
+        
+        if (NetworkedGameManager.Instance != null)
+        {
+            NetworkedGameManager.Instance.StartNewRound();
+        }
+    }
 }

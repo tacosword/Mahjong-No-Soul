@@ -22,6 +22,8 @@ public class ResultScreenUI : MonoBehaviour
     [Header("Action Buttons")]
     public Button continueButton;
     public Button backButton;
+    
+    private bool actionInProgress = false; // PREVENT DOUBLE-CLICKS
 
     void Start()
     {
@@ -31,153 +33,73 @@ public class ResultScreenUI : MonoBehaviour
         if (resultPanel != null)
         {
             resultPanel.SetActive(false);
-            Debug.Log($"[ResultScreen] Result panel hidden at start: {resultPanel.name}");
-        }
-        else
-        {
-            Debug.LogError("[ResultScreen] resultPanel is NOT ASSIGNED in Inspector!");
         }
         
-        // Check all required references
-        Debug.Log($"[ResultScreen] winTypeText assigned: {winTypeText != null}");
-        Debug.Log($"[ResultScreen] scoreDetailsText assigned: {scoreDetailsText != null}");
-        Debug.Log($"[ResultScreen] totalScoreText assigned: {totalScoreText != null}");
-        Debug.Log($"[ResultScreen] tileDisplay2D assigned: {tileDisplay2D != null}");
-        
-        // Setup button listeners - REMOVE ALL EXISTING LISTENERS FIRST
+        // Setup button listeners - CLEAR ALL LISTENERS FIRST
         if (continueButton != null)
         {
             continueButton.onClick.RemoveAllListeners();
             continueButton.onClick.AddListener(OnContinuePressed);
-            Debug.Log("[ResultScreen] ✓ Continue button listener added → OnContinuePressed");
-        }
-        else
-        {
-            Debug.LogWarning("[ResultScreen] continueButton is NULL!");
+            Debug.Log("[ResultScreen] ✓ Continue button → OnContinuePressed ONLY");
         }
         
         if (backButton != null)
         {
             backButton.onClick.RemoveAllListeners();
             backButton.onClick.AddListener(OnRestartPressed);
-            Debug.Log("[ResultScreen] ✓ Back button listener added → OnRestartPressed");
-        }
-        else
-        {
-            Debug.LogWarning("[ResultScreen] backButton is NULL!");
+            Debug.Log("[ResultScreen] ✓ Back button → OnRestartPressed ONLY");
         }
     }
 
-    /// <summary>
-    /// Display the result screen with the winning hand analysis and score.
-    /// </summary>
-    /// <param name="analysis">Hand analysis result</param>
-    /// <param name="totalScore">Total score</param>
-    /// <param name="winnerSeatIndex">Seat index of the winner</param>
-    /// <param name="winningTileSortValues">The actual tile sort values to display</param>
     public void ShowResult(HandAnalysisResult analysis, int totalScore, int winnerSeatIndex = -1, List<int> winningTileSortValues = null, List<string> flowerMessages = null)
     {
-        Debug.Log($"[ResultScreen] ===== ShowResult called =====");
-        Debug.Log($"[ResultScreen] Score: {totalScore}, IsWinning: {analysis.IsWinningHand}");
-        Debug.Log($"[ResultScreen] Winner Seat Index: {winnerSeatIndex}");
-        Debug.Log($"[ResultScreen] Tile values count: {winningTileSortValues?.Count ?? 0}");
-        if (winningTileSortValues != null)
-        {
-            Debug.Log($"[ResultScreen] Tiles: {string.Join(", ", winningTileSortValues)}");
-        }
-
-        if (resultPanel == null)
-        {
-            Debug.LogError("[ResultScreen] resultPanel is NULL! Cannot show result screen!");
-            Debug.LogError("[ResultScreen] Make sure ResultScreenUI component has resultPanel assigned in Inspector!");
-            return;
-        }
-
-        Debug.Log($"[ResultScreen] Activating result panel: {resultPanel.name}");
+        if (resultPanel == null) return;
+        
         resultPanel.SetActive(true);
+        actionInProgress = false; // RESET FLAG
         
         // Show/hide buttons based on server status
         if (continueButton != null)
         {
-            bool isServer = NetworkServer.active;
-            continueButton.gameObject.SetActive(isServer);
-            Debug.Log($"[ResultScreen] Continue button visibility: {isServer} (NetworkServer.active={NetworkServer.active})");
-            
-            if (isServer)
-            {
-                Debug.Log($"[ResultScreen] ✓✓✓ CONTINUE BUTTON IS VISIBLE ✓✓✓");
-            }
+            continueButton.gameObject.SetActive(NetworkServer.active);
         }
         
         if (backButton != null)
         {
             backButton.gameObject.SetActive(true);
-            Debug.Log("[ResultScreen] Back button visible: true");
         }
-        
-        Debug.Log($"[ResultScreen] Result panel active: {resultPanel.activeSelf}");
 
         // Set win type
         if (winTypeText != null)
         {
             winTypeText.text = "Mahjong!";
-            Debug.Log("[ResultScreen] Win type text set");
-        }
-        else
-        {
-            Debug.LogWarning("[ResultScreen] winTypeText is null - cannot set win type");
         }
 
         // Build score details
         string details = BuildScoreDetails(analysis, flowerMessages);
-        Debug.Log($"[ResultScreen] Score details built: {details.Length} characters");
 
-        // Set score details text
         if (scoreDetailsText != null)
         {
             scoreDetailsText.text = details;
-            Debug.Log("[ResultScreen] Score details text set");
-        }
-        else
-        {
-            Debug.LogWarning("[ResultScreen] scoreDetailsText is null");
         }
 
-        // Set total score
         if (totalScoreText != null)
         {
             totalScoreText.text = $"Total Score: {totalScore}";
-            Debug.Log("[ResultScreen] Total score text set");
-        }
-        else
-        {
-            Debug.LogWarning("[ResultScreen] totalScoreText is null");
         }
         
-        // Display the winning hand tiles as 2D sprites
         if (tileDisplay2D != null)
         {
             tileDisplay2D.DisplayWinningHand(winnerSeatIndex, winningTileSortValues);
         }
-        else
-        {
-            Debug.LogWarning("[ResultScreen] tileDisplay2D not assigned - tiles won't display");
-        }
-
-        Debug.Log($"[ResultScreen] ===== Result screen fully displayed =====");
     }
 
-    /// <summary>
-    /// Build the score breakdown text.
-    /// </summary>
     private string BuildScoreDetails(HandAnalysisResult analysis, List<string> flowerMessages = null)
     {
         string details = "Base Win: +1\n";
         
-        // === WIN TYPE & KONG BONUSES (Display these first) ===
         if (flowerMessages != null && flowerMessages.Count > 0)
         {
-            // Separate messages by category
             List<string> winTypeMessages = new List<string>();
             List<string> kongMessages = new List<string>();
             List<string> flowerOnlyMessages = new List<string>();
@@ -198,19 +120,16 @@ public class ResultScreenUI : MonoBehaviour
                 }
             }
             
-            // Add win type bonuses first
             foreach (string msg in winTypeMessages)
             {
                 details += $"{msg}\n";
             }
             
-            // Add Kong bonuses
             foreach (string msg in kongMessages)
             {
                 details += $"{msg}\n";
             }
             
-            // Add flower bonuses last (before hand composition bonuses)
             if (flowerOnlyMessages.Count > 0)
             {
                 foreach (string msg in flowerOnlyMessages)
@@ -219,19 +138,16 @@ public class ResultScreenUI : MonoBehaviour
                 }
             }
             
-            // Add spacing
             if (flowerMessages.Count > 0)
             {
                 details += "\n";
             }
         }
 
-        // Non-Traditional Pure Hand
         if (analysis.IsPureHand && !analysis.IsTraditionalWin)
         {
             details += "Pure Hand (Non-Traditional): +3\n";
         }
-        // Traditional Win bonuses
         else if (analysis.IsTraditionalWin)
         {
             if (analysis.IsPureHand)
@@ -253,7 +169,6 @@ public class ResultScreenUI : MonoBehaviour
                 details += "All Triplets: +2\n";
             }
 
-            // Honor tile bonuses
             string honorBonuses = BuildHonorTileBonuses(analysis);
             if (!string.IsNullOrEmpty(honorBonuses))
             {
@@ -261,7 +176,6 @@ public class ResultScreenUI : MonoBehaviour
             }
         }
 
-        // Special hands
         if (analysis.Is13OrphansWin)
         {
             details += "Thirteen Orphans: +8\n";
@@ -272,7 +186,6 @@ public class ResultScreenUI : MonoBehaviour
             details += "Seven Pairs: +3\n";
         }
 
-        // Flowers
         if (analysis.FlowerCount > 0)
         {
             details += $"Flowers ({analysis.FlowerCount}): +{analysis.FlowerCount}\n";
@@ -281,15 +194,11 @@ public class ResultScreenUI : MonoBehaviour
         return details;
     }
 
-    /// <summary>
-    /// Build the honor tile bonus text.
-    /// </summary>
     private string BuildHonorTileBonuses(HandAnalysisResult analysis)
     {
         string bonuses = "";
         List<int> allTripletSortValues = analysis.TripletSortValues;
 
-        // Find PlayerHand to get dragon values
         PlayerHand playerHand = FindFirstObjectByType<PlayerHand>();
         if (playerHand != null)
         {
@@ -302,7 +211,6 @@ public class ResultScreenUI : MonoBehaviour
             }
         }
 
-        // Wind bonuses
         if (allTripletSortValues.Contains(PlayerHand.PLAYER_WIND_SORT_VALUE))
         {
             bonuses += "Seat Wind Triplet: +1\n";
@@ -316,7 +224,6 @@ public class ResultScreenUI : MonoBehaviour
             }
             else
             {
-                // Replace the seat wind line if it's both
                 bonuses = bonuses.Replace("Seat Wind Triplet: +1\n", "Double Wind (Seat/Round): +2\n");
             }
         }
@@ -324,9 +231,6 @@ public class ResultScreenUI : MonoBehaviour
         return bonuses;
     }
 
-    /// <summary>
-    /// Hide the result screen.
-    /// </summary>
     public void Hide()
     {
         if (resultPanel != null)
@@ -340,50 +244,52 @@ public class ResultScreenUI : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Called when Continue button is pressed (Server only).
-    /// </summary>
     public void OnContinuePressed()
     {
-        Debug.Log("[ResultScreen] ========================================");
-        Debug.Log("[ResultScreen] CONTINUE BUTTON PRESSED!!!");
-        Debug.Log("[ResultScreen] ========================================");
-        
-        if (!NetworkServer.active)
+        // PREVENT DOUBLE-CLICK
+        if (actionInProgress)
         {
-            Debug.LogWarning("[ResultScreen] Only server can continue!");
+            Debug.LogWarning("[ResultScreen] Action already in progress - ignoring");
+            return;
+        }
+        actionInProgress = true;
+        
+        Debug.Log("[ResultScreen] ======== CONTINUE PRESSED ========");
+        
+        if (!NetworkServer.active || !NetworkClient.isConnected)
+        {
+            Debug.LogError("[ResultScreen] Not host! Cannot continue.");
+            actionInProgress = false;
             return;
         }
         
-        Debug.Log("[ResultScreen] Server check passed - starting new round");
+        Debug.Log("[ResultScreen] Starting new round...");
         Hide();
         
         if (NetworkedGameManager.Instance != null)
         {
-            Debug.Log("[ResultScreen] Calling NetworkedGameManager.Instance.StartNewRound()");
             NetworkedGameManager.Instance.StartNewRound();
-            Debug.Log("[ResultScreen] StartNewRound() called successfully");
         }
         else
         {
-            Debug.LogError("[ResultScreen] NetworkedGameManager.Instance is NULL!");
+            Debug.LogError("[ResultScreen] NetworkedGameManager is NULL!");
+            actionInProgress = false;
         }
-        
-        Debug.Log("[ResultScreen] OnContinuePressed() complete");
     }
 
-    /// <summary>
-    /// Called when the Back/Restart button is pressed.
-    /// </summary>
     public void OnRestartPressed()
     {
-        Debug.Log("[ResultScreen] ========================================");
-        Debug.Log("[ResultScreen] BACK BUTTON PRESSED!!!");
-        Debug.Log("[ResultScreen] ========================================");
+        // PREVENT DOUBLE-CLICK
+        if (actionInProgress)
+        {
+            Debug.LogWarning("[ResultScreen] Action already in progress - ignoring");
+            return;
+        }
+        actionInProgress = true;
         
+        Debug.Log("[ResultScreen] ======== BACK PRESSED ========");
         Hide();
         
-        // Disconnect from network and return to main menu
         if (NetworkClient.isConnected)
         {
             if (NetworkServer.active)
@@ -396,7 +302,6 @@ public class ResultScreenUI : MonoBehaviour
             }
         }
         
-        // Load main menu scene
         UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
     }
 }

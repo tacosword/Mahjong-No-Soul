@@ -311,4 +311,20 @@ private System.Collections.IEnumerator InitializeGameAfterSceneLoad()
     }
 
     /// <summary>
+    /// Called when Game scene loads during a round reload.
+    /// </summary>
+    public void OnGameSceneReloaded()
+    {
+        Debug.Log("[Lobby] Game scene reloaded for new round");
+        
+        if (!NetworkServer.active)
+        {
+            Debug.Log("[Lobby] Not server - skipping reload initialization");
+            return;
+        }
+        
+        // The game manager will handle the reload automatically
+        // We just need to call OnGameSceneLoaded again
+        OnGameSceneLoaded();
+    }
 }
