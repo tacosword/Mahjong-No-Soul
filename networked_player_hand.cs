@@ -281,7 +281,10 @@ public class NetworkedPlayerHand : NetworkBehaviour
             RepositionTiles();
             
             // Request another tile from server (flower replacement)
-            CmdRequestFlowerReplacement(seatIndex);
+            // Get PlayerIndex to send to server
+            NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+            int myPlayerIndex = myPlayer != null ? myPlayer.PlayerIndex : 0;
+            CmdRequestFlowerReplacement(myPlayerIndex);
             
             return; // Don't process as normal tile
         }
@@ -348,8 +351,24 @@ public class NetworkedPlayerHand : NetworkBehaviour
             logicHand.SortHand();
         }
         
-        // Spawn visuals (all players see tiles, but non-local players see face-down)
-        DrawInitialHand(tiles);
+        // Spawn visuals: owner sees real tiles, opponents see 13 face-down placeholders
+        if (isLocalPlayer)
+        {
+            DrawInitialHand(tiles);
+        }
+        else
+        {
+            // Force container setup before spawning placeholders
+            if (handContainer == null)
+            {
+                GameObject container = GameObject.Find($"HandPosition_Seat{seatIndex}");
+                if (container != null)
+                {
+                    handContainer = container.transform;
+                }
+            }
+            UpdateOpponentHandDisplay(13);
+        }
     }
     
     /// <summary>
@@ -546,10 +565,14 @@ public class NetworkedPlayerHand : NetworkBehaviour
             return;
         }
         
-        // Save the drawn tile (if it exists)
-        GameObject savedDrawnTile = drawnTile;
+        // Clear the drawn tile — it will be re-shown separately when it's this opponent's turn
+        if (drawnTile != null)
+        {
+            Destroy(drawnTile);
+            drawnTile = null;
+        }
         
-        // Destroy all current hand tiles
+        // Destroy all tracked hand tiles
         foreach (GameObject tile in spawnedTiles)
         {
             if (tile != null) 
@@ -558,6 +581,14 @@ public class NetworkedPlayerHand : NetworkBehaviour
             }
         }
         spawnedTiles.Clear();
+        
+        // SAFETY: Destroy any orphaned children in the container not tracked by spawnedTiles.
+        // This catches stale tiles from scene setup, reused components, or double-fired RPCs
+        // that would otherwise make the opponent appear to have more tiles than they do.
+        foreach (Transform child in handContainer)
+        {
+            Destroy(child.gameObject);
+        }
         
         // Get a tile prefab to use as face-down placeholder
         if (NetworkedGameManager.Instance == null || 
@@ -583,9 +614,6 @@ public class NetworkedPlayerHand : NetworkBehaviour
             spawnedTiles.Add(tile);
         }
         
-        // Restore drawn tile
-        drawnTile = savedDrawnTile;
-        
         // Reposition everything
         RepositionTiles();
         
@@ -599,14 +627,27 @@ public class NetworkedPlayerHand : NetworkBehaviour
     {
         if (!isOwned) return;
 
-        // Check if it's our turn
+        // Get this player's permanent PlayerIndex (declared at method scope)
+        NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+        if (myPlayer == null)
+        {
+            Debug.LogError("No NetworkPlayer component found!");
+            return;
+        }
+        int myPlayerIndex = myPlayer.PlayerIndex;
+
+        // Check if it's our turn - compare PlayerIndex to currentPlayerIndex
         if (NetworkedGameManager.Instance != null)
         {
-            if (NetworkedGameManager.Instance.CurrentPlayerIndex != seatIndex)
+            int currentTurn = NetworkedGameManager.Instance.CurrentPlayerIndex;
+            
+            if (myPlayerIndex != currentTurn)
             {
-                Debug.Log("Not your turn!");
+                Debug.Log($"Not your turn! You are Player {myPlayerIndex}, current turn is Player {currentTurn}");
                 return;
             }
+            
+            Debug.Log($"✓ It's your turn! Player {myPlayerIndex} can discard.");
         }
 
         TileData discardedData = discardedTile.GetComponent<TileData>();
@@ -642,8 +683,8 @@ public class NetworkedPlayerHand : NetworkBehaviour
         if (winButtonUI != null) winButtonUI.SetActive(false);
         if (kongButtonUI != null) kongButtonUI.SetActive(false);
 
-        // Tell server
-        CmdDiscardTile(seatIndex, tileValue, handPosition);
+        // Tell server - use myPlayerIndex already declared above
+        CmdDiscardTile(myPlayerIndex, tileValue, handPosition);
     }
 
     /// <summary>
@@ -661,7 +702,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
         
         foreach (NetworkPlayer player in allPlayers)
         {
-            if (player.PlayerIndex == playerSeatIndex)
+            if (player.CurrentSeatPosition == playerSeatIndex)
             {
                 targetPlayer = player;
                 break;
@@ -987,7 +1028,9 @@ public class NetworkedPlayerHand : NetworkBehaviour
         // Tell server
         List<int> kongTileSortValues = new List<int> { targetValue, targetValue, targetValue, targetValue };
         int newConcealedCount = spawnedTiles.Count;
-        CmdDeclareKong(seatIndex, targetValue, kongData.Select(t => t.GetSortValue()).ToList(), newConcealedCount);
+        NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+        int myPlayerIndex = myPlayer != null ? myPlayer.PlayerIndex : 0;
+        CmdDeclareKong(myPlayerIndex, targetValue, kongData.Select(t => t.GetSortValue()).ToList(), newConcealedCount);
     }
 
     [Command]
@@ -1198,7 +1241,9 @@ public class NetworkedPlayerHand : NetworkBehaviour
         Debug.Log($"[ShowResults] Sending to server via CmdDeclareMahjong...");
         // Pass both tile values (for display) AND flower messages (for scoring breakdown)
         // (allTileSortValues already created earlier in this method around line 870)
-        CmdDeclareMahjong(seatIndex, analysis, score, allTileSortValues, flowerMessages);
+        NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+        int myPlayerIndex = myPlayer != null ? myPlayer.PlayerIndex : 0;
+        CmdDeclareMahjong(myPlayerIndex, analysis, score, allTileSortValues, flowerMessages);
     }
 
     [Command]
@@ -1294,7 +1339,7 @@ public class NetworkedPlayerHand : NetworkBehaviour
                 
                 // Rows of 4 flowers with vertical spacing of 0.16
                 int flowersPerRow = 4;
-                float flowerRowSpacing = 0.16f;
+                float flowerRowSpacing = -0.16f;
                 
                 for (int i = 0; i < flowerTiles.Count; i++)
                 {
@@ -1347,12 +1392,31 @@ public class NetworkedPlayerHand : NetworkBehaviour
         float tileSpacing = 0.12f;
         
         // Rotation based on seat
-        Quaternion tileRotation = (seatIndex == 0) ? 
-            Quaternion.identity : 
-            Quaternion.Euler(0f, 180f, 0f);
+        // Seat 0: 0° - tiles face the player normally
+        // Seat 2: 0° - opposite side, same facing as Seat 0
+        // Seats 1, 3: 180° rotation
+        Quaternion tileRotation;
+        if (seatIndex == 0 || seatIndex == 2)
+        {
+            tileRotation = Quaternion.identity;
+        }
+        else
+        {
+            tileRotation = Quaternion.Euler(0f, 180f, 0f);
+        }
         
         // Direction based on seat
-        float directionMultiplier = (seatIndex == 0) ? 1f : -1f;
+        // Seats 0 and 2: Left to right (+1)
+        // Seats 1 and 3: Right to left (-1)
+        float directionMultiplier;
+        if (seatIndex == 0 || seatIndex == 2)
+        {
+            directionMultiplier = 1f;
+        }
+        else
+        {
+            directionMultiplier = -1f;
+        }
         
         // Calculate starting X using existing melds
         // NOTE: localMeldSizes doesn't include THIS Kong yet (added after positioning)
@@ -2097,7 +2161,9 @@ public class NetworkedPlayerHand : NetworkBehaviour
         logicHand.SetDrawnTile(originalDrawn);
         
         // Tell server we won with Ron
-        CmdDeclareRon(seatIndex, pendingRonTile, analysis, score, allTileSortValues, flowerMessages);
+        NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+        int myPlayerIndex = myPlayer != null ? myPlayer.PlayerIndex : 0;
+        CmdDeclareRon(myPlayerIndex, pendingRonTile, analysis, score, allTileSortValues, flowerMessages);
         
         // Clear the pending Ron tile
         pendingRonTile = -1;
@@ -2253,7 +2319,12 @@ public class NetworkedPlayerHand : NetworkBehaviour
         
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkedGameManager.Instance.PlayerRespondedToInterrupt(seatIndex, action);
+            // CRITICAL FIX: Send PlayerIndex, not seatIndex!
+            NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+            int myPlayerIndex = myPlayer != null ? myPlayer.PlayerIndex : 0;
+            
+            Debug.Log($"[CmdRespondToInterrupt] Sending PlayerIndex={myPlayerIndex}, action={action}");
+            NetworkedGameManager.Instance.PlayerRespondedToInterrupt(myPlayerIndex, action);
         }
     }
 
@@ -2656,16 +2727,31 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         float tileSpacing = 0.12f;
         
         // ===== FIX: Rotation based on seat =====
-        // Player 0: No rotation (0°) - tiles face the player normally
-        // Players 1, 2, 3: 180° rotation - tiles face backward toward player
-        Quaternion tileRotation = (seatIndex == 0) ? 
-        Quaternion.identity : 
-        Quaternion.Euler(0f, 180f, 0f);
+        // Seat 0: 0° - tiles face the player normally
+        // Seat 2: 0° - opposite side, same facing as Seat 0
+        // Seats 1, 3: 180° rotation - tiles face backward toward player
+        Quaternion tileRotation;
+        if (seatIndex == 0 || seatIndex == 2)
+        {
+            tileRotation = Quaternion.identity;
+        }
+        else
+        {
+            tileRotation = Quaternion.Euler(0f, 180f, 0f);
+        }
         
         // ===== FIX: Direction multiplier =====
-        // Player 0: tiles go in positive direction (+1)
-        // Players 1, 2, 3: tiles go in NEGATIVE direction (-1)
-        float directionMultiplier = (seatIndex == 0) ? 1f : -1f;
+        // Seats 0 and 2: tiles go in positive direction (+1) - left to right
+        // Seats 1 and 3: tiles go in NEGATIVE direction (-1) - right to left
+        float directionMultiplier;
+        if (seatIndex == 0 || seatIndex == 2)
+        {
+            directionMultiplier = 1f;
+        }
+        else
+        {
+            directionMultiplier = -1f;
+        }
         
         // CRITICAL FIX: Calculate starting X using ALL meld sizes (including self-Kongs)
         float meldStartX = 0f;
@@ -2954,12 +3040,17 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
     private void CmdSendCompletedMeld(InterruptActionType meldType, int calledTile, List<int> tileSortValues, int newConcealedCount)
     {
         Debug.Log($"[PlayerHand] Server received completed {meldType} meld: {string.Join(", ", tileSortValues)}");
-        Debug.Log($"[PlayerHand] Player {seatIndex} now has {newConcealedCount} concealed tiles");
+        
+        // MUST send playerIndex (not seatIndex) — the server uses playerIndex to look up
+        // playerSeats[] for the conversion to seat before broadcasting via RpcShowMeld.
+        NetworkPlayer myPlayer = GetComponent<NetworkPlayer>();
+        int myPlayerIndex = myPlayer != null ? myPlayer.PlayerIndex : seatIndex;
+        Debug.Log($"[PlayerHand] Sending meld as PlayerIndex={myPlayerIndex} (seatIndex={seatIndex})");
         
         // Store for broadcasting
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkedGameManager.Instance.StoreMeldForBroadcast(seatIndex, meldType, calledTile, tileSortValues);
+            NetworkedGameManager.Instance.StoreMeldForBroadcast(myPlayerIndex, meldType, calledTile, tileSortValues);
         }
         
         // Broadcast hand size update to all clients
@@ -3125,20 +3216,33 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         float tileSpacing = 0.12f;
         
         // ===== ROTATION =====
+        // Seat 0: 0° - tiles face the player normally
+        // Seat 2: 0° - opposite side, same facing as Seat 0
+        // Seats 1, 3: 180° rotation
         Quaternion tileRotation;
-        if (opponentSeatIndex == 0)
+        if (opponentSeatIndex == 0 || opponentSeatIndex == 2)
         {
-            tileRotation = Quaternion.identity;  // 0° for Player 0
+            tileRotation = Quaternion.identity;
         }
         else
         {
-            tileRotation = Quaternion.Euler(0f, 180f, 0f);  // 180° for others
+            tileRotation = Quaternion.Euler(0f, 180f, 0f);
         }
 
         // ===== DIRECTION =====
-        // Player 0: POSITIVE direction (+1) matches their local left-to-right
-        // Players 1-3: NEGATIVE direction (-1) for proper left-to-right view
-        float directionMultiplier = (opponentSeatIndex == 0) ? 1f : -1f;
+        // Seat 0: POSITIVE direction (+1) - left to right
+        // Seat 1: NEGATIVE direction (-1) - right to left (rotated view)
+        // Seat 2: POSITIVE direction (+1) - left to right (opposite side, same orientation as Seat 0)
+        // Seat 3: NEGATIVE direction (-1) - right to left (rotated view)
+        float directionMultiplier;
+        if (opponentSeatIndex == 0 || opponentSeatIndex == 2)
+        {
+            directionMultiplier = 1f;  // Left to right for Seats 0 and 2
+        }
+        else
+        {
+            directionMultiplier = -1f;  // Right to left for Seats 1 and 3
+        }
 
         // Calculate starting X position using ACTUAL previous meld sizes
         float meldStartX = 0f;
@@ -3273,13 +3377,15 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         if (isViewingOwnKong)
         {
             // LOCAL PLAYER: Use appropriate rotation based on seat
-            if (opponentSeatIndex == 0)
+            // Seat 0: 0°, Seat 2: 0° (same facing as Seat 0)
+            // Seats 1, 3: 180°
+            if (opponentSeatIndex == 0 || opponentSeatIndex == 2)
             {
-                tileRotation = Quaternion.identity;  // 0° for Player 0
+                tileRotation = Quaternion.identity;
             }
             else
             {
-                tileRotation = Quaternion.Euler(0f, 180f, 0f);  // 180° for others
+                tileRotation = Quaternion.Euler(0f, 180f, 0f);
             }
         }
         else
@@ -3292,7 +3398,9 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
             if (faceDownPrefab != null)
             {
                 // Using face-down prefab: standard rotation
-                if (opponentSeatIndex == 0)
+                // Seat 0: 0°, Seat 2: 0° (same facing as Seat 0)
+                // Seats 1, 3: 180°
+                if (opponentSeatIndex == 0 || opponentSeatIndex == 2)
                 {
                     tileRotation = Quaternion.identity;
                 }
@@ -3304,20 +3412,31 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
             else
             {
                 // Using flipped tiles: add 180° X rotation to flip face-down
-                if (opponentSeatIndex == 0)
+                // Seat 0: X=180° only.  Seat 2: X=180° only (same facing as Seat 0).
+                // Seats 1, 3: X=180° + Y=180°
+                if (opponentSeatIndex == 0 || opponentSeatIndex == 2)
                 {
-                    tileRotation = Quaternion.Euler(180f, 0f, 0f);  // Flipped face-down
+                    tileRotation = Quaternion.Euler(180f, 0f, 0f);
                 }
                 else
                 {
-                    tileRotation = Quaternion.Euler(180f, 180f, 0f);  // Flipped + 180° Y
+                    tileRotation = Quaternion.Euler(180f, 180f, 0f);
                 }
             }
         }
 
         // ===== DIRECTION =====
-        // FIXED: Use -1f for left-to-right (was +1f for right-to-left)
-        float directionMultiplier = (opponentSeatIndex == 0) ? 1f : -1f;
+        // Seats 0 and 2: Left to right (+1)
+        // Seats 1 and 3: Right to left (-1)
+        float directionMultiplier;
+        if (opponentSeatIndex == 0 || opponentSeatIndex == 2)
+        {
+            directionMultiplier = 1f;
+        }
+        else
+        {
+            directionMultiplier = -1f;
+        }
         // Calculate start X based on existing melds
         float meldStartX = 0f;
         for (int i = 0; i < existingMeldSizes.Count; i++)
@@ -3763,19 +3882,19 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         
         if (spawnedDiscards == null) return;
         
-        // Check all players' discard piles
+        // Check all seats' discard piles
         foreach (var kvp in spawnedDiscards)
         {
-            List<GameObject> discardTiles = kvp.Value;
+            var discardEntries = kvp.Value;
             
-            foreach (GameObject tile in discardTiles)
+            foreach (var entry in discardEntries)
             {
-                if (tile == null) continue;
+                if (entry.tileObject == null) continue;
                 
-                TileData data = tile.GetComponent<TileData>();
+                TileData data = entry.tileObject.GetComponent<TileData>();
                 if (data != null && data.GetSortValue() == targetValue)
                 {
-                    SetTileHighlight(tile, true);
+                    SetTileHighlight(entry.tileObject, true);
                 }
             }
         }
@@ -3791,11 +3910,11 @@ private void CmdStoreChiOption(int discarded, int tile1, int tile2)
         
         foreach (var kvp in spawnedDiscards)
         {
-            List<GameObject> discardTiles = kvp.Value;
+            var discardEntries = kvp.Value;
             
-            foreach (GameObject tile in discardTiles)
+            foreach (var entry in discardEntries)
             {
-                if (tile != null) SetTileHighlight(tile, false);
+                if (entry.tileObject != null) SetTileHighlight(entry.tileObject, false);
             }
         }
     }

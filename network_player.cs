@@ -194,11 +194,18 @@ private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.
 
 private void SetupPlayerHandInGame()
 {
-    // Find hand container for our seat
-    GameObject handContainer = GameObject.Find($"HandPosition_Seat{PlayerIndex}");
+    // CRITICAL: Use CurrentSeatPosition (which rotates), NOT PlayerIndex (permanent ID)
+    int seatToUse = CurrentSeatPosition >= 0 ? CurrentSeatPosition : PlayerIndex;
+    
+    Debug.Log($"[SetupPlayerHand] {Username}: PlayerIndex={PlayerIndex}, CurrentSeat={CurrentSeatPosition}, Using={seatToUse}");
+    
+    // Find hand container for our CURRENT seat position
+    GameObject handContainer = GameObject.Find($"HandPosition_Seat{seatToUse}");
     
     if (handContainer != null)
     {
+        Debug.Log($"[SetupPlayerHand] ✓ Found hand container for seat {seatToUse}");
+        
         MahjongPlayerHand playerHand = GetComponent<MahjongPlayerHand>();
         if (playerHand == null)
         {
@@ -207,6 +214,10 @@ private void SetupPlayerHandInGame()
         
         // Assign container to player hand
         playerHand.handContainer = handContainer.transform;
+    }
+    else
+    {
+        Debug.LogError($"[SetupPlayerHand] ✗ Could not find HandPosition_Seat{seatToUse}!");
     }
 }
 
