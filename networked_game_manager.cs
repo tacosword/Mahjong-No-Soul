@@ -8,8 +8,17 @@ using System.Linq;
 /// </summary>
 public class NetworkedGameManager : NetworkBehaviour
 {
-    // Add this field at the top with other fields
-    private Dictionary<int, List<GameObject>> spawnedDiscardTiles = new Dictionary<int, List<GameObject>>();
+    // Helper struct to track discard tiles with both player and seat info
+    public class DiscardTileEntry
+    {
+        public GameObject tileObject;
+        public int playerIndex;
+        public int seatPosition;
+    }
+    
+    // Store discards by SEAT POSITION (visual location) 
+    // Key = seatPosition, Value = list of tiles at that seat
+    private Dictionary<int, List<DiscardTileEntry>> spawnedDiscardTiles = new Dictionary<int, List<DiscardTileEntry>>();
 
     // Store Chi tiles from clients
     private Dictionary<int, List<int>> lastChiTilesPerPlayer = new Dictionary<int, List<int>>();
@@ -45,8 +54,17 @@ public class NetworkedGameManager : NetworkBehaviour
     [SyncVar]
     private int consecutiveEastWins = 0;
     
-    private int[] playerSeats = new int[4]; // Maps player index to seat position
-    private bool isReloadingForNewRound = false; // Flag to prevent double initialization
+    // STATIC variables persist across scene reloads (not destroyed with GameObject)
+    private static int[] persistentPlayerSeats = new int[4] { 0, 1, 2, 3 };
+    private static int[] persistentInitialSeats = new int[4] { 0, 1, 2, 3 };  // Track initial seats
+    private static int persistentRoundWind = 401;
+    private static int persistentConsecutiveEastWins = 0;
+    private static bool hasPersistedData = false;
+    
+    // Instance variables (reset on scene reload)
+    private int[] playerSeats = new int[4];
+    private int[] initialPlayerSeats = new int[4];  // Track starting seats for full rotation detection
+    private bool isReloadingForNewRound = false;
 
     // Server-only data
     private List<int> wallTiles = new List<int>();
@@ -82,39 +100,49 @@ public class NetworkedGameManager : NetworkBehaviour
         Debug.Log("=== NetworkedGameManager.StartGame() CALLED ===");
         Debug.Log($"gameStarted flag: {gameStarted}");
         Debug.Log($"Players received: {gamePlayers?.Count ?? 0}");
-        Debug.Log($"isReloadingForNewRound flag: {isReloadingForNewRound}");
+        Debug.Log($"hasPersistedData: {hasPersistedData}");
         
-        // If this is a reload for a new round, skip re-initialization of player list and seats
-        if (!isReloadingForNewRound)
+        players = new List<NetworkPlayer>(gamePlayers);
+        
+        // CRITICAL FIX: Restore from static variables if this is a reload
+        if (hasPersistedData)
         {
-            // First game - initialize everything
-            if (gameStarted)
-            {
-                Debug.LogWarning("Game already started!");
-                return;
-            }
-    
-            players = new List<NetworkPlayer>(gamePlayers);
-    
-            // Initialize seat assignments (1:1 mapping initially)
-            for (int i = 0; i < players.Count; i++)
-            {
-                playerSeats[i] = i;
-            }
-            roundWind = 401; // Start at East
-            consecutiveEastWins = 0;
-            Debug.Log("[Game] Seat assignments initialized - all players at their starting seats");
-    
+            Debug.Log("[Game] *** RESTORING FROM STATIC PERSISTENCE ***");
+            System.Array.Copy(persistentPlayerSeats, playerSeats, 4);
+            System.Array.Copy(persistentInitialSeats, initialPlayerSeats, 4);
+            roundWind = persistentRoundWind;
+            consecutiveEastWins = persistentConsecutiveEastWins;
+            Debug.Log($"[Game] Restored seat assignments: [{string.Join(", ", playerSeats.Take(players.Count))}]");
+            Debug.Log($"[Game] Restored initial seats: [{string.Join(", ", initialPlayerSeats.Take(players.Count))}]");
+            Debug.Log($"[Game] Restored round wind: {roundWind}, consecutive East wins: {consecutiveEastWins}");
         }
         else
         {
-            Debug.Log("[Game] Continuing existing game with seat rotation preserved");
-            Debug.Log($"[Game] Preserved seats: [{string.Join(", ", playerSeats)}]");
-            Debug.Log($"[Game] Round wind: {roundWind}, Consecutive East wins: {consecutiveEastWins}");
-            isReloadingForNewRound = false; // Reset flag
+            // First game ever - initialize seats based on player count
+            Debug.Log("[Game] First game - initializing seats");
             
-            // Reset gameStarted flag for new round
-            gameStarted = false;
+            if (players.Count == 2)
+            {
+                // FOR TESTING: 2-player game starts at seats 2 and 3
+                playerSeats[0] = 2;  // Player 0 at Seat 2 (North)
+                playerSeats[1] = 3;  // Player 1 at Seat 3 (East)
+                Debug.Log("[Game] 2-player game - using seats 2 and 3");
+            }
+            else
+            {
+                // 3 or 4 players - use sequential seats starting from 0
+                for (int i = 0; i < players.Count; i++)
+                {
+                    playerSeats[i] = i;
+                }
+            }
+            
+            // CRITICAL: Store the initial seat assignments for full rotation detection
+            System.Array.Copy(playerSeats, initialPlayerSeats, 4);
+            
+            roundWind = 401;
+            consecutiveEastWins = 0;
+            Debug.Log($"[Game] First game - initialized seat assignments: [{string.Join(", ", playerSeats.Take(players.Count))}]");
         }
         
         Debug.Log($"Starting Mahjong game with {players.Count} players");
@@ -143,12 +171,36 @@ public class NetworkedGameManager : NetworkBehaviour
         DealInitialHands();
         
         gameStarted = true;
-        currentPlayerIndex = 0;
+        
+        // CRITICAL FIX: Find which player is at the LOWEST seat number (East position)
+        // For 2-player at seats 2,3: Seat 2 is East
+        // For 4-player at seats 0,1,2,3: Seat 0 is East
+        int eastSeat = playerSeats.Take(players.Count).Min();
+        int eastPlayerIndex = -1;
+        
+        for (int i = 0; i < players.Count; i++)
+        {
+            if (playerSeats[i] == eastSeat)
+            {
+                eastPlayerIndex = i;
+                break;
+            }
+        }
+        
+        if (eastPlayerIndex == -1)
+        {
+            Debug.LogError($"[Game] Could not find player at East seat {eastSeat}! Defaulting to Player 0.");
+            eastPlayerIndex = 0;
+        }
+        
+        currentPlayerIndex = eastPlayerIndex;
+        Debug.Log($"[Game] Starting game. East player is PlayerIndex {eastPlayerIndex} at Seat {eastSeat}");
 
         Debug.Log("[Game] Sending RpcGameStarted...");
         RpcGameStarted();
+        RpcBroadcastRoundWind(roundWind);
         
-        Debug.Log("[Game] Starting first player turn...");
+        Debug.Log($"[Game] Starting turn for PlayerIndex {currentPlayerIndex} (East/Seat 0)...");
         StartPlayerTurn(currentPlayerIndex);
         
         Debug.Log("[Game] StartGame COMPLETE");
@@ -282,13 +334,13 @@ public class NetworkedGameManager : NetworkBehaviour
             initialTiles.Sort();
 
             Debug.Log($"[Game] Sending {initialTiles.Count} tiles to {player.Username}");
-            Debug.Log($"[Game] About to call RpcReceiveInitialHand for seat {i}");
+            Debug.Log($"[Game] About to call RpcReceiveInitialHand - PlayerIndex={i}, SeatPosition={seatPosition}");
             Debug.Log($"[Game] Tiles being sent: {string.Join(",", initialTiles)}");
             
-            // Use ClientRpc instead of TargetRpc - let clients filter by seat
-            RpcReceiveInitialHand(i, initialTiles);
+            // CRITICAL: Pass SEAT POSITION (not player index) so tiles spawn at correct location
+            RpcReceiveInitialHand(seatPosition, i, initialTiles);
             
-            Debug.Log($"[Game] RpcReceiveInitialHand called for seat {i}");
+            Debug.Log($"[Game] RpcReceiveInitialHand called for PlayerIndex={i} at Seat={seatPosition}");
         }
         
         Debug.Log("[Game] âœ“ Initial dealing complete");
@@ -307,10 +359,25 @@ public class NetworkedGameManager : NetworkBehaviour
     [Server]
     private void StartPlayerTurn(int playerIndex)
     {
-        if (playerIndex < 0 || playerIndex >= players.Count) return;
+        Debug.Log($"========================================");
+        Debug.Log($"[StartPlayerTurn] ENTRY");
+        Debug.Log($"  playerIndex: {playerIndex}");
+        Debug.Log($"  players.Count: {players.Count}");
+        Debug.Log($"========================================");
+        
+        if (playerIndex < 0 || playerIndex >= players.Count) 
+        {
+            Debug.LogError($"[StartPlayerTurn] INVALID playerIndex: {playerIndex}!");
+            return;
+        }
 
         NetworkPlayer targetPlayer = players[playerIndex];
         NetworkedPlayerHand targetHand = playerHands[playerIndex];
+        
+        // CRITICAL: Get the actual seat position for this player
+        int seatPosition = playerSeats[playerIndex];
+        
+        Debug.Log($"[StartPlayerTurn] Player {playerIndex} ({targetPlayer.Username}) at Seat {seatPosition}");
 
         if (wallTiles.Count > 0)
         {
@@ -319,10 +386,10 @@ public class NetworkedGameManager : NetworkBehaviour
             // Check if the drawn tile is a flower
             if (IsFlowerTile(drawnTile))
             {
-                Debug.Log($"[GameManager] Player {playerIndex} drew FLOWER: {drawnTile}");
+                Debug.Log($"[GameManager] Player {playerIndex} (Seat {seatPosition}) drew FLOWER: {drawnTile}");
                 
-                // Show the flower to ALL clients
-                RpcShowFlowerTile(playerIndex, drawnTile);
+                // Show the flower to ALL clients - use SEAT POSITION
+                RpcShowFlowerTile(seatPosition, playerIndex, drawnTile);
                 
                 // Draw replacement tile(s) until we get a non-flower
                 int replacementTile = drawnTile;
@@ -339,7 +406,7 @@ public class NetworkedGameManager : NetworkBehaviour
                         if (IsFlowerTile(replacementTile))
                         {
                             Debug.Log($"[GameManager] Player {playerIndex} drew ANOTHER flower: {replacementTile}");
-                            RpcShowFlowerTile(playerIndex, replacementTile);
+                            RpcShowFlowerTile(seatPosition, playerIndex, replacementTile);
                         }
                     }
                     else
@@ -352,13 +419,13 @@ public class NetworkedGameManager : NetworkBehaviour
                 if (!IsFlowerTile(replacementTile))
                 {
                     Debug.Log($"[GameManager] Player {playerIndex} finally drew normal tile: {replacementTile}");
-                    RpcDrawTile(playerIndex, replacementTile);
+                    RpcDrawTile(seatPosition, playerIndex, replacementTile);
                 }
             }
             else
             {
-                // Normal tile - send to all clients
-                RpcDrawTile(playerIndex, drawnTile);
+                // Normal tile - send to all clients - use SEAT POSITION
+                RpcDrawTile(seatPosition, playerIndex, drawnTile);
             }
         }
         else
@@ -371,16 +438,16 @@ public class NetworkedGameManager : NetworkBehaviour
     /// Show a flower tile to all clients
     /// </summary>
     [ClientRpc]
-    private void RpcShowFlowerTile(int seatIndex, int flowerTileValue)
+    private void RpcShowFlowerTile(int seatPosition, int playerIndex, int flowerTileValue)
     {
         Debug.Log($"==========================================");
-        Debug.Log($"[RpcShowFlowerTile] Player {seatIndex} revealed FLOWER: {flowerTileValue}");
+        Debug.Log($"[RpcShowFlowerTile] Player {playerIndex} at Seat {seatPosition} revealed FLOWER: {flowerTileValue}");
         
-        // Find the player at this seat
+        // Find the player by their permanent PlayerIndex
         NetworkPlayer targetPlayer = null;
         foreach (var player in FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None))
         {
-            if (player.PlayerIndex == seatIndex)
+            if (player.PlayerIndex == playerIndex)
             {
                 targetPlayer = player;
                 break;
@@ -389,7 +456,7 @@ public class NetworkedGameManager : NetworkBehaviour
         
         if (targetPlayer == null)
         {
-            Debug.LogError($"[RpcShowFlowerTile] Could not find player at seat {seatIndex}");
+            Debug.LogError($"[RpcShowFlowerTile] Could not find player with PlayerIndex {playerIndex}");
             Debug.Log($"==========================================");
             return;
         }
@@ -397,12 +464,12 @@ public class NetworkedGameManager : NetworkBehaviour
         NetworkedPlayerHand hand = targetPlayer.GetComponent<NetworkedPlayerHand>();
         if (hand == null)
         {
-            Debug.LogError($"[RpcShowFlowerTile] Player at seat {seatIndex} has no NetworkedPlayerHand!");
+            Debug.LogError($"[RpcShowFlowerTile] Player {playerIndex} has no NetworkedPlayerHand!");
             Debug.Log($"==========================================");
             return;
         }
         
-        Debug.Log($"[RpcShowFlowerTile] Calling ShowFlowerTileToAll on player {seatIndex}");
+        Debug.Log($"[RpcShowFlowerTile] Calling ShowFlowerTileToAll on player {playerIndex}");
         hand.ShowFlowerTileToAll(flowerTileValue);
         Debug.Log($"==========================================");
     }
@@ -411,18 +478,18 @@ public class NetworkedGameManager : NetworkBehaviour
     /// Tell all clients that a player drew a tile (everyone can see it)
     /// </summary>
     [ClientRpc]
-    private void RpcDrawTile(int seatIndex, int tileValue)
+    private void RpcDrawTile(int seatPosition, int playerIndex, int tileValue)
     {
         NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
-        int localSeat = localPlayer?.PlayerIndex ?? -1;
+        int localPlayerIndex = localPlayer?.PlayerIndex ?? -1;
         
-        Debug.Log($"[RpcDrawTile] LOCAL SEAT: {localSeat}, Drawing for SEAT: {seatIndex}, Tile: {tileValue}");
+        Debug.Log($"[RpcDrawTile] Local Player={localPlayerIndex}, Target Player={playerIndex} at Seat={seatPosition}, Tile={tileValue}");
         
-        // Find the player at this seat
+        // Find the player by their permanent PlayerIndex
         NetworkPlayer targetPlayer = null;
         foreach (var player in FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None))
         {
-            if (player.PlayerIndex == seatIndex)
+            if (player.PlayerIndex == playerIndex)
             {
                 targetPlayer = player;
                 break;
@@ -431,38 +498,38 @@ public class NetworkedGameManager : NetworkBehaviour
 
         if (targetPlayer == null)
         {
-            Debug.LogWarning($"[RpcDrawTile] Could not find player at seat {seatIndex}");
+            Debug.LogWarning($"[RpcDrawTile] Could not find player with PlayerIndex {playerIndex}");
             return;
         }
 
         NetworkedPlayerHand hand = targetPlayer.GetComponent<NetworkedPlayerHand>();
         if (hand == null)
         {
-            Debug.LogError($"[RpcDrawTile] No hand component for seat {seatIndex}");
+            Debug.LogError($"[RpcDrawTile] No hand component for player {playerIndex}");
             return;
         }
 
-        // CRITICAL: Ensure container is set before drawing
+        // CRITICAL: Ensure container is set to the SEAT POSITION (not player index)
         if (hand.GetHandContainer() == null)
         {
-            Debug.LogWarning($"[RpcDrawTile] Hand container not set for seat {seatIndex}, setting it now");
-            GameObject container = GameObject.Find($"HandPosition_Seat{seatIndex}");
+            Debug.LogWarning($"[RpcDrawTile] Hand container not set for player {playerIndex}, setting to Seat {seatPosition}");
+            GameObject container = GameObject.Find($"HandPosition_Seat{seatPosition}");
             if (container != null)
             {
                 hand.SetHandContainerDirect(container.transform);
-                Debug.Log($"[RpcDrawTile] Container set: {container.name}");
+                Debug.Log($"[RpcDrawTile] ✓ Container set: {container.name}");
             }
             else
             {
-                Debug.LogError($"[RpcDrawTile] Could not find HandPosition_Seat{seatIndex}");
+                Debug.LogError($"[RpcDrawTile] ✗ Could not find HandPosition_Seat{seatPosition}");
                 return;
             }
         }
 
         // Check if this is the local player
-        bool isLocalPlayer = (localPlayer != null && localPlayer.PlayerIndex == seatIndex);
+        bool isLocalPlayer = (localPlayer != null && localPlayer.PlayerIndex == playerIndex);
         
-        Debug.Log($"[RpcDrawTile] isLocalPlayer={isLocalPlayer} (local={localSeat}, target={seatIndex})");
+        Debug.Log($"[RpcDrawTile] isLocalPlayer={isLocalPlayer}");
 
         // NEW: Check if this is a flower tile for the LOCAL player only
         if (isLocalPlayer && IsFlowerTile(tileValue))
@@ -486,7 +553,7 @@ public class NetworkedGameManager : NetworkBehaviour
         NetworkPlayer targetPlayer = null;
         foreach (var player in FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None))
         {
-            if (player.PlayerIndex == playerSeat)
+            if (player.CurrentSeatPosition == playerSeat)
             {
                 targetPlayer = player;
                 break;
@@ -523,16 +590,19 @@ public class NetworkedGameManager : NetworkBehaviour
         }
         
         // Broadcast the Kong to OTHER players (not the player who did it)
-        RpcShowSelfKong(playerIndex, kongValue, kongTiles);
+        // MUST convert playerIndex → seatPosition here because the RPC receiver
+        // uses the value directly as a seat for KongArea_Seat{} container lookup.
+        int kongSeatPosition = playerSeats[playerIndex];
+        RpcShowSelfKong(kongSeatPosition, kongValue, kongTiles);
         
         // Turn continues - player must still discard
         Debug.Log($"[GameManager] Player {playerIndex} keeps turn after Kong");
     }
 
     [ClientRpc]
-    private void RpcShowSelfKong(int playerIndex, int kongValue, List<int> kongTiles)
+    private void RpcShowSelfKong(int seatPosition, int kongValue, List<int> kongTiles)
     {
-        Debug.Log($"[GameManager] RPC: Player {playerIndex} declared self-Kong");
+        Debug.Log($"[GameManager] RPC: Seat {seatPosition} declared self-Kong");
         
         // Find the LOCAL player's hand (the one viewing this)
         NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
@@ -541,18 +611,18 @@ public class NetworkedGameManager : NetworkBehaviour
         NetworkedPlayerHand localHand = localPlayer.GetComponent<NetworkedPlayerHand>();
         if (localHand == null) return;
         
-        int localSeat = localPlayer.PlayerIndex;
+        int localSeat = localPlayer.CurrentSeatPosition;
         
         // Don't show to the player who did the Kong (they already see it locally)
-        if (localSeat == playerIndex)
+        if (localSeat == seatPosition)
         {
             Debug.Log($"[GameManager] Skipping self-Kong RPC - this is our Kong");
             return;
         }
         
         // Show the opponent's Kong
-        Debug.Log($"[GameManager] Showing Player {playerIndex}'s self-Kong to local Player {localSeat}");
-        localHand.ShowOpponentSelfKong(playerIndex, kongValue, kongTiles);
+        Debug.Log($"[GameManager] Showing Seat {seatPosition}'s self-Kong to local Seat {localSeat}");
+        localHand.ShowOpponentSelfKong(seatPosition, kongValue, kongTiles);
     }
 
     /// <summary>
@@ -661,6 +731,10 @@ public class NetworkedGameManager : NetworkBehaviour
         NetworkPlayer winner = players[playerIndex];
         Debug.Log($"[GameManager] Winner: {winner.Username} (Seat {playerIndex})");
 
+        // CRITICAL FIX: Trigger seat rotation based on winner's seat
+        int winnerSeatIndex = playerSeats[playerIndex];
+        HandleWin(winnerSeatIndex);
+
         // Show win screen to all clients
         RpcShowWinScreen(playerIndex, winner.Username, score, analysis, tileSortValues, flowerMessages);
     }
@@ -674,18 +748,28 @@ public class NetworkedGameManager : NetworkBehaviour
     }
 
     /// <summary>
+    /// Broadcast the current round wind to all clients so the UI can display it.
+    /// </summary>
+    [ClientRpc]
+    private void RpcBroadcastRoundWind(int roundWindValue)
+    {
+        Debug.Log($"[Client] Round wind broadcast received: {roundWindValue}");
+        GameUIManager.UpdateRoundWindText(roundWindValue);
+    }
+
+    /// <summary>
     /// Send initial hand to all clients - all clients spawn tiles for all players
     /// </summary>
     [ClientRpc]
-    private void RpcReceiveInitialHand(int seatIndex, List<int> tiles)
+    private void RpcReceiveInitialHand(int seatPosition, int playerIndex, List<int> tiles)
     {
-        Debug.Log($"[RpcReceiveInitialHand] Received for seat {seatIndex}, tiles: {tiles.Count}");
+        Debug.Log($"[RpcReceiveInitialHand] Player {playerIndex} at Seat {seatPosition}, tiles: {tiles.Count}");
         
-        // Find the player at this seat
+        // Find the player by their permanent PlayerIndex
         NetworkPlayer targetPlayer = null;
         foreach (var player in FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None))
         {
-            if (player.PlayerIndex == seatIndex)
+            if (player.PlayerIndex == playerIndex)
             {
                 targetPlayer = player;
                 break;
@@ -694,48 +778,50 @@ public class NetworkedGameManager : NetworkBehaviour
 
         if (targetPlayer == null)
         {
-            Debug.LogWarning($"[RpcReceiveInitialHand] Could not find player at seat {seatIndex}");
+            Debug.LogWarning($"[RpcReceiveInitialHand] Could not find player with PlayerIndex {playerIndex}");
             return;
         }
 
-        Debug.Log($"[RpcReceiveInitialHand] Spawning tiles for seat {seatIndex} (all players can see)");
+        Debug.Log($"[RpcReceiveInitialHand] Found player: {targetPlayer.Username}, spawning at Seat {seatPosition}");
 
         // Get or create hand component
         NetworkedPlayerHand hand = targetPlayer.GetComponent<NetworkedPlayerHand>();
         if (hand == null)
         {
-            Debug.Log($"[RpcReceiveInitialHand] Creating NetworkedPlayerHand component for seat {seatIndex}");
+            Debug.Log($"[RpcReceiveInitialHand] Creating NetworkedPlayerHand component");
             hand = targetPlayer.gameObject.AddComponent<NetworkedPlayerHand>();
         }
 
-        hand.SetSeatIndex(seatIndex);
+        // CRITICAL: Set the seat position (where tiles spawn), NOT player index
+        hand.SetSeatIndex(seatPosition);
 
-        // Set container
-        GameObject container = GameObject.Find($"HandPosition_Seat{seatIndex}");
+        // Set container to the SEAT POSITION container (rotated position)
+        GameObject container = GameObject.Find($"HandPosition_Seat{seatPosition}");
         if (container != null)
         {
             hand.SetHandContainerDirect(container.transform);
-            Debug.Log($"[RpcReceiveInitialHand] Container set for seat {seatIndex}: {container.name}");
+            Debug.Log($"[RpcReceiveInitialHand] ✓ Container set for Seat {seatPosition}: {container.name}");
         }
         else
         {
-            Debug.LogError($"[RpcReceiveInitialHand] Could not find HandPosition_Seat{seatIndex}");
+            Debug.LogError($"[RpcReceiveInitialHand] ✗ Could not find HandPosition_Seat{seatPosition}");
         }
 
-        // Check if this is the local player to set up logic hand
+        // Check if this is the local player
         NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
-        bool isLocalPlayer = (localPlayer != null && localPlayer.PlayerIndex == seatIndex);
+        bool isLocalPlayer = (localPlayer != null && localPlayer.PlayerIndex == playerIndex);
 
         // Call the receive method - all clients spawn visuals, but only owner gets logic
         hand.ReceiveInitialHandDirect(tiles, isLocalPlayer);
     }
 
     [ClientRpc]
-    private void RpcSpawnDiscardTile(int playerIndex, int tileValue, int discardIndex)
+    private void RpcSpawnDiscardTile(int seatPosition, int playerIndex, int tileValue, int discardIndex)
     {
-        if (playerIndex >= playerDiscardPositions.Length) return;
+        // Use SEAT POSITION for visual placement
+        if (seatPosition >= playerDiscardPositions.Length) return;
         
-        Transform discardArea = playerDiscardPositions[playerIndex];
+        Transform discardArea = playerDiscardPositions[seatPosition];
         if (discardArea == null) return;
 
         GameObject tilePrefab = FindTilePrefabBySortValue(tileValue);
@@ -749,18 +835,36 @@ public class NetworkedGameManager : NetworkBehaviour
         Vector3 spawnPos;
         Quaternion tileRotation;
         
-        if (playerIndex == 0)
+        // Layout based on SEAT POSITION (visual position at table)
+        switch (seatPosition)
         {
-            // Player 0: Standard layout
-            spawnPos = discardArea.position + new Vector3(col * 0.12f, 0.01f, -row * 0.16f);
-            tileRotation = Quaternion.identity;
-        }
-        else
-        {
-            // Players 1, 2, 3: Rotated 90° CCW
-            // Keep visual layout similar but rotated
-            spawnPos = discardArea.position + new Vector3(row * 0.16f, 0.01f, col * 0.12f);
-            tileRotation = Quaternion.Euler(0f, -90f, 0f);
+            case 0: // Seat 0 (South): No rotation (0°)
+                spawnPos = discardArea.position + new Vector3(col * 0.12f, 0.01f, -row * 0.16f);
+                tileRotation = Quaternion.identity;
+                break;
+                
+            case 1: // Seat 1 (West): 90° CCW rotation
+                // Grid flows left-to-right from West's perspective
+                spawnPos = discardArea.position + new Vector3(row * 0.16f, 0.01f, col * 0.12f);
+                tileRotation = Quaternion.Euler(0f, -90f, 0f);
+                break;
+                
+            case 2: // Seat 2 (North): 180° rotation
+                // 180° from Seat 0 baseline: X and Z both negate
+                spawnPos = discardArea.position + new Vector3(-col * 0.12f, 0.01f, row * 0.16f);
+                tileRotation = Quaternion.Euler(0f, 180f, 0f);
+                break;
+                
+            case 3: // Seat 3 (East): 90° CW rotation (same as -270° or +90°)
+                // Grid flows left-to-right from East's perspective  
+                spawnPos = discardArea.position + new Vector3(-row * 0.16f, 0.01f, -col * 0.12f);
+                tileRotation = Quaternion.Euler(0f, 90f, 0f);
+                break;
+                
+            default:
+                spawnPos = discardArea.position;
+                tileRotation = Quaternion.identity;
+                break;
         }
         
         GameObject discardTile = Instantiate(tilePrefab, spawnPos, tileRotation);
@@ -769,14 +873,20 @@ public class NetworkedGameManager : NetworkBehaviour
         Collider collider = discardTile.GetComponent<Collider>();
         if (collider != null) collider.enabled = false;
         
-        // STORE THE DISCARD TILE REFERENCE
-        if (!spawnedDiscardTiles.ContainsKey(playerIndex))
+        // STORE by SEAT POSITION (visual location) with player info for game logic
+        if (!spawnedDiscardTiles.ContainsKey(seatPosition))
         {
-            spawnedDiscardTiles[playerIndex] = new List<GameObject>();
+            spawnedDiscardTiles[seatPosition] = new List<DiscardTileEntry>();
         }
-        spawnedDiscardTiles[playerIndex].Add(discardTile);
         
-        Debug.Log($"[GameManager] Spawned discard {tileValue} for player {playerIndex} at row {row}, col {col}");
+        spawnedDiscardTiles[seatPosition].Add(new DiscardTileEntry
+        {
+            tileObject = discardTile,
+            playerIndex = playerIndex,
+            seatPosition = seatPosition
+        });
+        
+        Debug.Log($"[GameManager] Spawned discard {tileValue} for player {playerIndex} at seat {seatPosition}, row {row}, col {col}");
     }
 
     [ClientRpc]
@@ -905,6 +1015,7 @@ public class NetworkedGameManager : NetworkBehaviour
 
     public int CurrentPlayerIndex => currentPlayerIndex;
     public int WallTilesRemaining => wallTilesRemaining;
+    public int RoundWind => roundWind;
     public Transform[] PlayerHandPositions => playerHandPositions;
     public Transform[] PlayerDiscardPositions => playerDiscardPositions;
     public Transform[] PlayerKongPositions => playerKongPositions;
@@ -924,7 +1035,13 @@ public class NetworkedGameManager : NetworkBehaviour
     [Server]
     private void CheckForInterrupts(int discardingPlayer, int discardedTile)
     {
-        Debug.Log($"[GameManager] Checking for interrupts on tile {discardedTile} from Player {discardingPlayer}");
+        Debug.Log($"========================================");
+        Debug.Log($"[CheckForInterrupts] ENTRY");
+        Debug.Log($"  discardingPlayer: {discardingPlayer}");
+        Debug.Log($"  discardedTile: {discardedTile}");
+        Debug.Log($"  currentPlayerIndex BEFORE: {currentPlayerIndex}");
+        Debug.Log($"  players.Count: {players.Count}");
+        Debug.Log($"========================================");
         
         playersWhoCanInterrupt.Clear();
         interruptResponses.Clear();
@@ -969,14 +1086,26 @@ public class NetworkedGameManager : NetworkBehaviour
         if (waitingForInterruptResponses)
         {
             Debug.Log($"[GameManager] Waiting for {playersWhoCanInterrupt.Count} players to respond");
-            // DISABLED: Don't auto-pass anymore
-            // StartCoroutine(InterruptResponseTimeout());
+            // TIMEOUT REMOVED - Players can take as long as they need to respond
         }
         else
         {
-            Debug.Log($"[GameManager] No interrupts possible, advancing turn");
-            currentPlayerIndex = (currentPlayerIndex + 1) % players.Count;
+            Debug.Log($"========================================");
+            Debug.Log($"[CheckForInterrupts] *** NO INTERRUPTS - ADVANCING TURN ***");
+            Debug.Log($"  currentPlayerIndex BEFORE advance: {currentPlayerIndex}");
+            Debug.Log($"  players.Count: {players.Count}");
+            
+            int nextPlayer = (currentPlayerIndex + 1) % players.Count;
+            Debug.Log($"  nextPlayer calculated: {nextPlayer}");
+            
+            currentPlayerIndex = nextPlayer;
+            Debug.Log($"  currentPlayerIndex AFTER advance: {currentPlayerIndex}");
+            Debug.Log($"  Calling StartPlayerTurn({currentPlayerIndex})...");
+            
             StartPlayerTurn(currentPlayerIndex);
+            
+            Debug.Log($"  StartPlayerTurn returned.");
+            Debug.Log($"========================================");
         }
     }
 
@@ -986,18 +1115,49 @@ public class NetworkedGameManager : NetworkBehaviour
     [Server]
     public void PlayerRespondedToInterrupt(int playerIndex, InterruptActionType action)
     {
-        if (!waitingForInterruptResponses) return;
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log($"║ [GameManager] PlayerRespondedToInterrupt CALLED           ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+        Debug.Log($"[GameManager] Player Index: {playerIndex}");
+        Debug.Log($"[GameManager] Action: {action}");
+        Debug.Log($"[GameManager] Waiting for responses: {waitingForInterruptResponses}");
+        Debug.Log($"[GameManager] Players who can interrupt: [{string.Join(", ", playersWhoCanInterrupt)}]");
         
-        Debug.Log($"[GameManager] Player {playerIndex} responded: {action}");
+        if (!waitingForInterruptResponses)
+        {
+            Debug.LogError($"[GameManager] ✗ NOT waiting for responses! Ignoring.");
+            return;
+        }
         
+        if (!playersWhoCanInterrupt.Contains(playerIndex))
+        {
+            Debug.LogError($"[GameManager] ✗ Player {playerIndex} is NOT in playersWhoCanInterrupt list!");
+            return;
+        }
+        
+        Debug.Log($"[GameManager] ✓ Recording response from Player {playerIndex}: {action}");
         interruptResponses[playerIndex] = action;
+        
+        Debug.Log($"[GameManager] Responses so far: {interruptResponses.Count}/{playersWhoCanInterrupt.Count}");
+        foreach (var resp in interruptResponses)
+        {
+            Debug.Log($"[GameManager]   Player {resp.Key} → {resp.Value}");
+        }
         
         // Check if all players have responded
         bool allResponded = playersWhoCanInterrupt.All(p => interruptResponses.ContainsKey(p));
         
+        Debug.Log($"[GameManager] All responded? {allResponded}");
+        
         if (allResponded)
         {
+            Debug.Log($"[GameManager] ✓ All players responded - processing now");
             ProcessInterruptResponses();
+        }
+        else
+        {
+            List<int> stillWaiting = playersWhoCanInterrupt.Where(p => !interruptResponses.ContainsKey(p)).ToList();
+            Debug.Log($"[GameManager] Still waiting for players: [{string.Join(", ", stillWaiting)}]");
         }
     }
 
@@ -1009,7 +1169,7 @@ public class NetworkedGameManager : NetworkBehaviour
     private void ProcessInterruptResponses()
     {
         waitingForInterruptResponses = false;
-        StopAllCoroutines(); // Stop timeout
+        // Timeout removed - no coroutines to stop
         
         Debug.Log($"[GameManager] Processing {interruptResponses.Count} interrupt responses");
         
@@ -1097,6 +1257,9 @@ public class NetworkedGameManager : NetworkBehaviour
         {
             Debug.Log($"[GameManager] Kong from discard - drawing replacement tile");
             
+            // Get the interrupting player's seat position
+            int interruptingSeat = playerSeats[interruptingPlayer];
+            
             if (wallTiles.Count > 0)
             {
                 int replacementTile = DrawTileFromWall();
@@ -1105,12 +1268,12 @@ public class NetworkedGameManager : NetworkBehaviour
                 while (IsFlowerTile(replacementTile) && wallTiles.Count > 0)
                 {
                     Debug.Log($"[GameManager] Drew flower {replacementTile}, showing and replacing");
-                    RpcShowFlowerTile(interruptingPlayer, replacementTile);
+                    RpcShowFlowerTile(interruptingSeat, interruptingPlayer, replacementTile);
                     replacementTile = DrawTileFromWall();
                 }
                 
-                Debug.Log($"[GameManager] Sending replacement tile {replacementTile} to Player {interruptingPlayer}");
-                RpcDrawTile(interruptingPlayer, replacementTile);
+                Debug.Log($"[GameManager] Sending replacement tile {replacementTile} to Player {interruptingPlayer} at Seat {interruptingSeat}");
+                RpcDrawTile(interruptingSeat, interruptingPlayer, replacementTile);
             }
             else
             {
@@ -1173,36 +1336,20 @@ public class NetworkedGameManager : NetworkBehaviour
         RpcShowMeld(playerIndex, action, calledTile, meldTiles);
     }
 
-    /// <summary>
-    /// Timeout for interrupt responses (10 seconds).
-    /// </summary>
-    private System.Collections.IEnumerator InterruptResponseTimeout()
-    {
-        yield return new WaitForSeconds(10f);
-        
-        if (waitingForInterruptResponses)
-        {
-            Debug.Log("[GameManager] Interrupt timeout - treating missing responses as 'Pass'");
-            
-            // Fill in missing responses as "None"
-            foreach (int playerIndex in playersWhoCanInterrupt)
-            {
-                if (!interruptResponses.ContainsKey(playerIndex))
-                {
-                    interruptResponses[playerIndex] = InterruptActionType.Pass;
-                }
-            }
-            
-            ProcessInterruptResponses();
-        }
-    }
-
     // --- MODIFY PlayerDiscardedTile ---
     // Replace the existing method with this version:
 
     [Server]
     public void PlayerDiscardedTile(int playerIndex, int tileValue, Vector3 localHandPosition)
     {
+        Debug.Log($"========================================");
+        Debug.Log($"[PlayerDiscardedTile] CALLED");
+        Debug.Log($"  playerIndex: {playerIndex}");
+        Debug.Log($"  currentPlayerIndex: {currentPlayerIndex}");
+        Debug.Log($"  tileValue: {tileValue}");
+        Debug.Log($"  playerSeats: [{string.Join(", ", playerSeats)}]");
+        Debug.Log($"========================================");
+        
         if (playerIndex != currentPlayerIndex)
         {
             Debug.LogWarning($"Player {playerIndex} discarded out of turn!");
@@ -1213,13 +1360,22 @@ public class NetworkedGameManager : NetworkBehaviour
         int discardIndex = playerDiscardCounts[playerIndex];
         playerDiscardCounts[playerIndex]++;
 
-        Debug.Log($"Player {playerIndex} discarded {tileValue}");
+        Debug.Log($"[PlayerDiscardedTile] Player {playerIndex} discarded {tileValue}");
 
-        // Spawn discard tile for all clients
-        RpcSpawnDiscardTile(playerIndex, tileValue, discardIndex);
+        // Get the seat position for visual placement
+        int seatPosition = playerSeats[playerIndex];
+        Debug.Log($"[PlayerDiscardedTile] Player {playerIndex} sits at Seat {seatPosition}");
+
+        // Spawn discard tile at the correct SEAT POSITION
+        RpcSpawnDiscardTile(seatPosition, playerIndex, tileValue, discardIndex);
+
+        // Hide the drawn tile placeholder on all other clients now that the discard is done
+        RpcHideDrawnTile(seatPosition);
 
         // NEW: Check for interrupts instead of immediately advancing
+        Debug.Log($"[PlayerDiscardedTile] Calling CheckForInterrupts...");
         CheckForInterrupts(playerIndex, tileValue);
+        Debug.Log($"[PlayerDiscardedTile] DONE");
     }
 
     public int GetPlayerCount()
@@ -1231,11 +1387,11 @@ public class NetworkedGameManager : NetworkBehaviour
     /// Show a completed meld to all clients.
     /// </summary>
     [ClientRpc]
-    private void RpcShowMeld(int playerIndex, InterruptActionType meldType, int calledTile, List<int> allTileSortValues)
+    private void RpcShowMeld(int seatPosition, InterruptActionType meldType, int calledTile, List<int> allTileSortValues)
     {
         Debug.Log($"[GameManager] ═══════════════════════════════");
         Debug.Log($"[GameManager] RPC ShowMeld START");
-        Debug.Log($"[GameManager] Player {playerIndex} declared {meldType}");
+        Debug.Log($"[GameManager] Seat {seatPosition} declared {meldType}");
         Debug.Log($"[GameManager] Tiles: {string.Join(", ", allTileSortValues)}");
         
         // Find the LOCAL player who is viewing this RPC
@@ -1246,16 +1402,19 @@ public class NetworkedGameManager : NetworkBehaviour
             return;
         }
         
-        int localSeat = localPlayer.PlayerIndex;
-        Debug.Log($"[GameManager] I am Player {localSeat}");
+        int localSeat = localPlayer.CurrentSeatPosition;
+        Debug.Log($"[GameManager] Local player: CurrentSeat={localSeat}");
+        Debug.Log($"[GameManager] Meld creator: Seat={seatPosition}");
         
         // Skip if this is our own meld (already shown locally in ExecuteChi/ExecutePon/ExecuteKong)
-        if (localSeat == playerIndex)
+        if (localSeat == seatPosition)
         {
-            Debug.Log($"[GameManager] This is MY meld - already shown locally, skipping RPC");
+            Debug.Log($"[GameManager] ✓ This is MY meld (Seat match) - already shown locally, SKIPPING RPC");
             Debug.Log($"[GameManager] ═══════════════════════════════");
             return;
         }
+        
+        Debug.Log($"[GameManager] This is NOT my meld - will display opponent's meld");
         
         // Get the LOCAL player's hand component
         NetworkedPlayerHand localHand = localPlayer.GetComponent<NetworkedPlayerHand>();
@@ -1265,11 +1424,10 @@ public class NetworkedGameManager : NetworkBehaviour
             return;
         }
         
-        // Tell the LOCAL hand to display the OPPONENT's meld
-        Debug.Log($"[GameManager] → Calling ShowOpponentMeld on MY hand (Player {localSeat})");
-        Debug.Log($"[GameManager] → To display Player {playerIndex}'s {meldType}");
+        // Tell the LOCAL hand to display the OPPONENT's meld at the correct seat
+        Debug.Log($"[GameManager] → Calling ShowOpponentMeld for Seat {seatPosition}'s {meldType}");
         
-        localHand.ShowOpponentMeld(playerIndex, meldType, calledTile, allTileSortValues);
+        localHand.ShowOpponentMeld(seatPosition, meldType, calledTile, allTileSortValues);
         
         Debug.Log($"[GameManager] ═══════════════════════════════");
     }
@@ -1342,7 +1500,11 @@ public class NetworkedGameManager : NetworkBehaviour
     [Server]
     public void StoreMeldForBroadcast(int playerIndex, InterruptActionType meldType, int calledTile, List<int> tileSortValues)
     {
-        Debug.Log($"[GameManager] Storing {meldType} meld for Player {playerIndex}: {string.Join(", ", tileSortValues)}");
+        // Convert playerIndex → seatPosition before broadcast.
+        // RpcShowMeld's receiver uses this value for KongArea_Seat{} container lookup
+        // and for the skip check (comparing against local CurrentSeatPosition).
+        int seatPosition = playerSeats[playerIndex];
+        Debug.Log($"[GameManager] Storing {meldType} meld for PlayerIndex={playerIndex} (Seat={seatPosition}): {string.Join(", ", tileSortValues)}");
         
         pendingMeldBroadcasts[playerIndex] = new MeldBroadcastData
         {
@@ -1351,8 +1513,8 @@ public class NetworkedGameManager : NetworkBehaviour
             tileSortValues = new List<int>(tileSortValues)
         };
         
-        // Broadcast immediately
-        RpcShowMeld(playerIndex, meldType, calledTile, tileSortValues);
+        // Broadcast immediately — pass seatPosition, not playerIndex
+        RpcShowMeld(seatPosition, meldType, calledTile, tileSortValues);
     }
 
     [Server]
@@ -1365,88 +1527,119 @@ public class NetworkedGameManager : NetworkBehaviour
     [ClientRpc]
     private void RpcRemoveLastDiscardTile(int playerIndex)
     {
-        if (!spawnedDiscardTiles.ContainsKey(playerIndex)) return;
+        // Find the most recent discard by this player (search all seats)
+        DiscardTileEntry mostRecentDiscard = null;
+        int seatWithDiscard = -1;
         
-        List<GameObject> playerDiscards = spawnedDiscardTiles[playerIndex];
-        if (playerDiscards.Count == 0) return;
-        
-        // Remove and destroy the LAST tile (most recent discard)
-        GameObject lastDiscard = playerDiscards[playerDiscards.Count - 1];
-        playerDiscards.RemoveAt(playerDiscards.Count - 1);
-        
-        if (lastDiscard != null)
+        foreach (var kvp in spawnedDiscardTiles)
         {
-            Destroy(lastDiscard);
-            Debug.Log($"[GameManager] Removed last discard tile from player {playerIndex}");
+            int seat = kvp.Key;
+            List<DiscardTileEntry> tilesAtSeat = kvp.Value;
+            
+            // Search backwards to find most recent tile from this player
+            for (int i = tilesAtSeat.Count - 1; i >= 0; i--)
+            {
+                if (tilesAtSeat[i].playerIndex == playerIndex)
+                {
+                    mostRecentDiscard = tilesAtSeat[i];
+                    seatWithDiscard = seat;
+                    break;
+                }
+            }
+            
+            if (mostRecentDiscard != null) break;
         }
         
-        // REPOSITION ALL REMAINING TILES to fill the gap
-        RepositionDiscardTiles(playerIndex);
+        if (mostRecentDiscard == null)
+        {
+            Debug.LogWarning($"[RpcRemoveLastDiscardTile] Could not find discard from player {playerIndex}");
+            return;
+        }
+        
+        // Remove from list
+        spawnedDiscardTiles[seatWithDiscard].Remove(mostRecentDiscard);
+        
+        // Destroy visual object
+        if (mostRecentDiscard.tileObject != null)
+        {
+            Destroy(mostRecentDiscard.tileObject);
+            Debug.Log($"[GameManager] Removed last discard from player {playerIndex} at seat {seatWithDiscard}");
+        }
+        
+        // Reposition remaining tiles at that seat
+        RepositionDiscardTiles(seatWithDiscard);
     }
 
     /// <summary>
-    /// Reposition all discard tiles for a player to remove gaps
+    /// Reposition all discard tiles at a seat position to remove gaps
     /// </summary>
-    private void RepositionDiscardTiles(int playerIndex)
+    private void RepositionDiscardTiles(int seatPosition)
     {
-        if (!spawnedDiscardTiles.ContainsKey(playerIndex)) return;
+        if (!spawnedDiscardTiles.ContainsKey(seatPosition)) return;
         
-        List<GameObject> playerDiscards = spawnedDiscardTiles[playerIndex];
-        Transform discardArea = playerDiscardPositions[playerIndex];
+        List<DiscardTileEntry> tilesAtSeat = spawnedDiscardTiles[seatPosition];
+        Transform discardArea = playerDiscardPositions[seatPosition];
         
         if (discardArea == null) return;
         
-        Debug.Log($"[RepositionDiscardTiles] Repositioning {playerDiscards.Count} tiles for player {playerIndex}");
+        Debug.Log($"[RepositionDiscardTiles] Repositioning {tilesAtSeat.Count} tiles at seat {seatPosition}");
         
         // Reposition each tile based on its index
-        for (int i = 0; i < playerDiscards.Count; i++)
+        for (int i = 0; i < tilesAtSeat.Count; i++)
         {
-            GameObject tile = playerDiscards[i];
+            GameObject tile = tilesAtSeat[i].tileObject;
             if (tile == null) continue;
             
-            // ===== UPDATED: 8 tiles per row (was 6) =====
+            // 8 tiles per row
             int row = i / 8;
             int col = i % 8;
             
-            // ===== UPDATED: Position and rotation based on player =====
+            // Position and rotation based on SEAT POSITION (must match RpcSpawnDiscardTile)
             Vector3 newPos;
             Quaternion tileRotation;
             
-            if (playerIndex == 0)
+            switch (seatPosition)
             {
-                // Player 0: No rotation, standard grid
-                // Row spacing 0.16 (was 0.8)
-                newPos = discardArea.position + new Vector3(col * 0.12f, 0.01f, -row * 0.16f);
-                tileRotation = Quaternion.identity;
-            }
-            else
-            {
-                // Players 1, 2, 3: 90° CCW rotation with swapped axes
-                // Tiles still generate left-to-right visually
-                // After 90° CCW rotation:
-                // - Columns (left-to-right) use Z axis (positive Z = right)
-                // - Rows (top-to-bottom) use X axis (positive X = down)
-                
-                // CORRECTED: No negative on row, positive on col
-                newPos = discardArea.position + new Vector3(row * 0.16f, 0.01f, col * 0.12f);
-                tileRotation = Quaternion.Euler(0f, -90f, 0f);
+                case 0: // Seat 0 (South): No rotation (0°)
+                    newPos = discardArea.position + new Vector3(col * 0.12f, 0.01f, -row * 0.16f);
+                    tileRotation = Quaternion.identity;
+                    break;
+                    
+                case 1: // Seat 1 (West): 90° CCW rotation
+                    newPos = discardArea.position + new Vector3(row * 0.16f, 0.01f, col * 0.12f);
+                    tileRotation = Quaternion.Euler(0f, -90f, 0f);
+                    break;
+                    
+                case 2: // Seat 2 (North): 180° rotation
+                    newPos = discardArea.position + new Vector3(-col * 0.12f, 0.01f, row * 0.16f);
+                    tileRotation = Quaternion.Euler(0f, 180f, 0f);
+                    break;
+                    
+                case 3: // Seat 3 (East): 90° CW rotation
+                    newPos = discardArea.position + new Vector3(-row * 0.16f, 0.01f, -col * 0.12f);
+                    tileRotation = Quaternion.Euler(0f, 90f, 0f);
+                    break;
+                    
+                default:
+                    newPos = discardArea.position;
+                    tileRotation = Quaternion.identity;
+                    break;
             }
             
             tile.transform.position = newPos;
             tile.transform.rotation = tileRotation;
-            
-            Debug.Log($"[RepositionDiscardTiles]   Player {playerIndex}, tile {i}: row={row}, col={col}, pos={newPos}");
         }
         
-        Debug.Log($"[GameManager] Repositioned {playerDiscards.Count} discard tiles for player {playerIndex}");
+        Debug.Log($"[GameManager] Repositioned {tilesAtSeat.Count} discard tiles at seat {seatPosition}");
     }
 
     // ===== PUBLIC ACCESSORS =====
     
     /// <summary>
     /// Get all spawned discard tiles for highlighting purposes.
+    /// Returns dictionary keyed by seat position.
     /// </summary>
-    public Dictionary<int, List<GameObject>> GetSpawnedDiscardTiles()
+    public Dictionary<int, List<DiscardTileEntry>> GetSpawnedDiscardTiles()
     {
         return spawnedDiscardTiles;
     }
@@ -1493,8 +1686,16 @@ public class NetworkedGameManager : NetworkBehaviour
         Debug.Log($"[Game] Current seat assignments: [{string.Join(", ", playerSeats)}]");
         Debug.Log($"[Game] Round wind: {roundWind}, Consecutive East wins: {consecutiveEastWins}");
         
-        // Set flag to prevent double initialization
-        isReloadingForNewRound = true;
+        // CRITICAL: Save current state to static variables BEFORE scene reload destroys this object
+        System.Array.Copy(playerSeats, persistentPlayerSeats, 4);
+        System.Array.Copy(initialPlayerSeats, persistentInitialSeats, 4);
+        persistentRoundWind = roundWind;
+        persistentConsecutiveEastWins = consecutiveEastWins;
+        hasPersistedData = true;
+        
+        Debug.Log($"[Game] *** SAVED TO STATIC PERSISTENCE ***");
+        Debug.Log($"[Game] Persisted seats: [{string.Join(", ", persistentPlayerSeats)}]");
+        Debug.Log($"[Game] Persisted initial seats: [{string.Join(", ", persistentInitialSeats)}]");
         
         // Notify all clients to hide result screen
         RpcHideResultScreen();
@@ -1513,13 +1714,17 @@ public class NetworkedGameManager : NetworkBehaviour
     [Server]
     private void HandleWin(int winnerSeatIndex)
     {
-        Debug.Log($"[Game] HandleWin called - Winner seat: {winnerSeatIndex}");
+        Debug.Log($"========================================");
+        Debug.Log($"[Game] HandleWin called");
+        Debug.Log($"[Game] Winner seat: {winnerSeatIndex}");
+        Debug.Log($"[Game] Current playerSeats array: [{string.Join(", ", playerSeats)}]");
         
         // CRITICAL: Find which PLAYER won (not just seat)
         // We need to know if the East player won
         int winnerPlayerIndex = -1;
         for (int i = 0; i < players.Count; i++)
         {
+            Debug.Log($"[Game] Checking: Player {i} ({players[i].Username}) is at seat {playerSeats[i]}");
             if (playerSeats[i] == winnerSeatIndex)
             {
                 winnerPlayerIndex = i;
@@ -1527,24 +1732,38 @@ public class NetworkedGameManager : NetworkBehaviour
             }
         }
         
-        Debug.Log($"[Game] Winner: Player {winnerPlayerIndex} at Seat {winnerSeatIndex}");
+        if (winnerPlayerIndex < 0)
+        {
+            Debug.LogError($"[Game] ERROR: Could not find player at winning seat {winnerSeatIndex}!");
+            return;
+        }
+        
+        Debug.Log($"[Game] Winner: Player {winnerPlayerIndex} ({players[winnerPlayerIndex].Username}) at Seat {winnerSeatIndex}");
         
         // Check if East wind player won
-        // East is always at Seat 0 (physical position)
-        bool eastPlayerWon = (winnerSeatIndex == 0);
+        // East is ALWAYS at the LOWEST seat number among active players
+        int eastSeat = playerSeats.Take(players.Count).Min();
+        bool eastPlayerWon = (winnerSeatIndex == eastSeat);
+        
+        Debug.Log($"[Game] East seat (lowest): {eastSeat}");
+        Debug.Log($"[Game] Did East player win? {eastPlayerWon}");
         
         bool needsRotation = false;
         
         if (eastPlayerWon)
         {
             consecutiveEastWins++;
-            Debug.Log($"[Game] East (Seat 0) wins - consecutive count: {consecutiveEastWins}/3");
+            Debug.Log($"[Game] East (Seat {eastSeat}) wins - consecutive count: {consecutiveEastWins}/3");
             
             if (consecutiveEastWins >= 3)
             {
                 Debug.Log("[Game] East won 3 times in a row - forcing rotation");
                 needsRotation = true;
                 consecutiveEastWins = 0;
+            }
+            else
+            {
+                Debug.Log($"[Game] East retains position ({consecutiveEastWins} consecutive wins so far)");
             }
         }
         else
@@ -1556,11 +1775,12 @@ public class NetworkedGameManager : NetworkBehaviour
         
         if (needsRotation)
         {
+            Debug.Log("[Game] >>> ROTATION TRIGGERED <<<");
             RotatePlayerSeats();
         }
         else
         {
-            Debug.Log("[Game] No rotation - East retains position");
+            Debug.Log("[Game] >>> NO ROTATION - East keeps position <<<");
         }
         
         // Debug: Show post-win state
@@ -1568,6 +1788,7 @@ public class NetworkedGameManager : NetworkBehaviour
         Debug.Log($"[Game]   - Round wind: {roundWind}");
         Debug.Log($"[Game]   - Consecutive East wins: {consecutiveEastWins}");
         Debug.Log($"[Game]   - Seat assignments: [{string.Join(", ", playerSeats)}]");
+        Debug.Log($"========================================");
     }
     
     /// <summary>
@@ -1599,22 +1820,27 @@ public class NetworkedGameManager : NetworkBehaviour
             playerSeats[i] = newSeats[i];
         }
         
+        Debug.Log($"[Game] >>> Rotation math complete <<<");
+        Debug.Log($"[Game] New playerSeats array: [{string.Join(", ", playerSeats)}]");
+        
         // Log new seats
         for (int i = 0; i < players.Count; i++)
         {
             Debug.Log($"[Game] AFTER: Player {i} ({players[i].Username}) -> Seat {playerSeats[i]}");
         }
         
-        // Check if we've completed a full rotation
+        // Check if we've completed a full rotation back to starting positions
         bool fullRotation = true;
         for (int i = 0; i < players.Count; i++)
         {
-            if (playerSeats[i] != i)
+            if (playerSeats[i] != initialPlayerSeats[i])
             {
                 fullRotation = false;
                 break;
             }
         }
+        
+        Debug.Log($"[Game] Full rotation check: Current={string.Join(",", playerSeats.Take(players.Count))}, Initial={string.Join(",", initialPlayerSeats.Take(players.Count))}, Match={fullRotation}");
         
         if (fullRotation)
         {
@@ -1626,7 +1852,9 @@ public class NetworkedGameManager : NetworkBehaviour
         for (int i = 0; i < players.Count; i++)
         {
             int newSeat = playerSeats[i];
-            players[i].SetPlayerIndex(newSeat);
+            
+            // CRITICAL: Update CurrentSeatPosition (NOT PlayerIndex - that's permanent!)
+            players[i].SetCurrentSeatPosition(newSeat);
             
             // Calculate winds: East=401, South=402, West=403, North=404
             int seatWind = 401 + newSeat;
@@ -1634,6 +1862,9 @@ public class NetworkedGameManager : NetworkBehaviour
             Debug.Log($"[Game] Updating Player {i}: Seat={newSeat}, SeatWind={seatWind}, RoundWind={roundWind}");
             RpcUpdatePlayerWind(players[i].connectionToClient, seatWind, roundWind);
         }
+        
+        // Update the round wind UI for all clients (covers both no-change and AdvanceRoundWind cases)
+        RpcBroadcastRoundWind(roundWind);
         
         Debug.Log("[Game] ===== SEAT ROTATION COMPLETE =====");
     }
@@ -1694,11 +1925,11 @@ public class NetworkedGameManager : NetworkBehaviour
         // Clear spawned discard tiles
         foreach (var kvp in spawnedDiscardTiles)
         {
-            foreach (GameObject tile in kvp.Value)
+            foreach (DiscardTileEntry entry in kvp.Value)
             {
-                if (tile != null)
+                if (entry.tileObject != null)
                 {
-                    NetworkServer.Destroy(tile);
+                    NetworkServer.Destroy(entry.tileObject);
                 }
             }
         }

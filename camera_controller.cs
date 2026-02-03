@@ -38,10 +38,10 @@ public class CameraController : MonoBehaviour
 
         // Camera positions for each seat around the table
         Vector3[] positions = { 
-            new Vector3(0, 1.77f, -.88f),      // Seat 0 (South) - Faces North 
-            new Vector3(2.47f, 1.77f, 1.41f),  // Seat 1 (West) - Faces East 
-            new Vector3(0.18f, 1.77f, 3.885f),      // Seat 2 (North) - Faces South 
-            new Vector3(-2.295f, 1.77f, 1.59f)  // Seat 3 (East) - Faces West 
+            new Vector3(0, 1.77f, -.88f),      // Seat 0 (East) - Faces West 
+            new Vector3(2.47f, 1.77f, 1.41f),  // Seat 1 (South) - Faces North
+            new Vector3(0.18f, 1.77f, 3.885f),      // Seat 2 (West) - Faces East
+            new Vector3(-2.295f, 1.77f, 1.59f)  // Seat 3 (North) - Faces South
         };
         
         Vector3[] rotations = {

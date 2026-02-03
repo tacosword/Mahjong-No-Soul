@@ -33,26 +33,103 @@ public class InterruptUIManager : MonoBehaviour
     
     private bool isChiSelectionMode = false;
 
+    void Awake()
+    {
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] AWAKE - Component Initializing              ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+        Debug.Log($"[InterruptUI] GameObject: '{gameObject.name}'");
+        Debug.Log($"[InterruptUI] Active in Hierarchy: {gameObject.activeInHierarchy}");
+        Debug.Log($"[InterruptUI] Component Enabled: {enabled}");
+    }
+
+    void Start()
+    {
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] START - Validating References              ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+        
+        bool allValid = true;
+        
+        if (interruptPanel != null)
+            Debug.Log($"[InterruptUI] ✓ interruptPanel assigned: '{interruptPanel.name}'");
+        else { Debug.LogError("[InterruptUI] ✗ interruptPanel is NULL!"); allValid = false; }
+        
+        if (chiButton != null)
+            Debug.Log($"[InterruptUI] ✓ chiButton assigned");
+        else { Debug.LogWarning("[InterruptUI] ⚠ chiButton is NULL"); allValid = false; }
+        
+        if (ponButton != null)
+            Debug.Log($"[InterruptUI] ✓ ponButton assigned");
+        else { Debug.LogWarning("[InterruptUI] ⚠ ponButton is NULL"); allValid = false; }
+        
+        if (kongButton != null)
+            Debug.Log($"[InterruptUI] ✓ kongButton assigned");
+        else { Debug.LogWarning("[InterruptUI] ⚠ kongButton is NULL"); allValid = false; }
+        
+        if (ronButton != null)
+            Debug.Log($"[InterruptUI] ✓ ronButton assigned");
+        else { Debug.LogWarning("[InterruptUI] ⚠ ronButton is NULL"); allValid = false; }
+        
+        if (passButton != null)
+            Debug.Log($"[InterruptUI] ✓ passButton assigned");
+        else { Debug.LogWarning("[InterruptUI] ⚠ passButton is NULL"); allValid = false; }
+        
+        if (allValid)
+            Debug.Log("[InterruptUI] ✓✓✓ ALL REFERENCES VALID ✓✓✓");
+        else
+            Debug.LogError("[InterruptUI] ✗✗✗ MISSING REFERENCES - CHECK INSPECTOR ✗✗✗");
+        
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] START COMPLETE                              ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+    }
+
     public void Initialize(NetworkedPlayerHand hand)
     {
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] INITIALIZE Called                           ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+        
         playerHand = hand;
+        Debug.Log($"[InterruptUI] PlayerHand assigned: {playerHand != null}");
         
         // Setup button listeners
         if (chiButton != null)
+        {
             chiButton.onClick.AddListener(OnChiButtonClicked);
+            Debug.Log("[InterruptUI] ✓ Chi button listener added");
+        }
         
         if (ponButton != null)
+        {
             ponButton.onClick.AddListener(OnPonButtonClicked);
+            Debug.Log("[InterruptUI] ✓ Pon button listener added");
+        }
         
         if (kongButton != null)
+        {
             kongButton.onClick.AddListener(OnKongButtonClicked);
+            Debug.Log("[InterruptUI] ✓ Kong button listener added");
+        }
+        
         if (ronButton != null)
+        {
             ronButton.onClick.AddListener(OnRonButtonClicked);
+            Debug.Log("[InterruptUI] ✓ Ron button listener added");
+        }
         
         if (passButton != null)
+        {
             passButton.onClick.AddListener(OnPassButtonClicked);
+            Debug.Log("[InterruptUI] ✓ Pass button listener added");
+        }
         
         HideAll();
+        
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] INITIALIZE COMPLETE                         ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
     }
 
     /// <summary>
@@ -66,28 +143,61 @@ public class InterruptUIManager : MonoBehaviour
         List<ChiOption> chiOptions,
         System.Action<InterruptActionType> onDecision)
     {
-        Debug.Log($"[InterruptUI] Showing options - Chi:{canChi}, Pon:{canPon}, Kong:{canKong}");
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] SHOWING INTERRUPT OPTIONS                   ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+        Debug.Log($"[InterruptUI] Can Chi: {canChi} | Can Pon: {canPon} | Can Kong: {canKong} | Can Ron: {canRon}");
+        Debug.Log($"[InterruptUI] Chi Options Count: {chiOptions?.Count ?? 0}");
         
         availableChiOptions = chiOptions;
         onInterruptDecision = onDecision;
         
         if (interruptPanel != null)
+        {
             interruptPanel.SetActive(true);
+            Debug.Log("[InterruptUI] ✓ Interrupt panel activated");
+            Debug.Log($"[InterruptUI]     Panel active in hierarchy: {interruptPanel.activeInHierarchy}");
+        }
+        else
+        {
+            Debug.LogError("[InterruptUI] ✗✗✗ CRITICAL: interruptPanel is NULL! Cannot show options!");
+            return;
+        }
         
         // Enable/disable buttons
         if (chiButton != null)
+        {
             chiButton.gameObject.SetActive(canChi);
+            Debug.Log($"[InterruptUI] Chi button set to: {canChi}");
+        }
         
         if (ponButton != null)
+        {
             ponButton.gameObject.SetActive(canPon);
+            Debug.Log($"[InterruptUI] Pon button set to: {canPon}");
+        }
         
         if (kongButton != null)
+        {
             kongButton.gameObject.SetActive(canKong);
+            Debug.Log($"[InterruptUI] Kong button set to: {canKong}");
+        }
+        
         if (ronButton != null)
+        {
             ronButton.gameObject.SetActive(canRon);
+            Debug.Log($"[InterruptUI] Ron button set to: {canRon}");
+        }
         
         if (passButton != null)
+        {
             passButton.gameObject.SetActive(true);
+            Debug.Log("[InterruptUI] Pass button set to: true (always visible)");
+        }
+        
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [InterruptUI] SHOW COMPLETE - UI SHOULD BE VISIBLE        ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
     }
 
     /// <summary>

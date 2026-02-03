@@ -2,95 +2,45 @@ using UnityEngine;
 using Mirror;
 
 /// <summary>
-/// Controls the sun rotation based on the local player's seat position.
-/// Seats 0/1 (South side): Sun from North-West (9, 315, 0)
-/// Seats 2/3 (North side): Sun from South-East (9, 135, 0)
+/// Rotates the Sun object so it faces the correct direction relative to the
+/// local player's seat. Seats 0 and 1 share one angle; seats 2 and 3 share
+/// the opposite angle (180° flipped on Y).
+/// 
+/// Attach this script to the Sun object in the Game scene.
 /// </summary>
 public class SunController : MonoBehaviour
 {
-    [Header("Sun Object")]
-    [Tooltip("The directional light or sun object to rotate")]
-    public GameObject sunObject;
+    // Rotation for seats 0 and 1
+    [SerializeField] private Vector3 rotationSeats01 = new Vector3(9f, 315f, 0f);
 
-    [Header("Rotation Settings")]
-    [Tooltip("Sun rotation for Seats 0 and 1 (South side players)")]
-    public Vector3 southSideRotation = new Vector3(9f, 315f, 0f);
-    
-    [Tooltip("Sun rotation for Seats 2 and 3 (North side players)")]
-    public Vector3 northSideRotation = new Vector3(9f, 135f, 0f);
+    // Rotation for seats 2 and 3
+    [SerializeField] private Vector3 rotationSeats23 = new Vector3(9f, 135f, 0f);
 
-    void Start()
+    private bool oriented = false;
+
+    void Update()
     {
-        // Wait a frame to ensure NetworkClient.localPlayer is set
-        StartCoroutine(InitializeSunRotation());
-    }
+        // Already done — nothing more to do
+        if (oriented) return;
 
-    private System.Collections.IEnumerator InitializeSunRotation()
-    {
-        // Wait for local player to be ready
-        int attempts = 0;
-        int maxAttempts = 10;
-        
-        while (NetworkClient.localPlayer == null && attempts < maxAttempts)
-        {
-            yield return new WaitForSeconds(0.5f);
-            attempts++;
-        }
+        // Wait until Mirror has spawned the local player
+        if (NetworkClient.localPlayer == null) return;
 
-        if (NetworkClient.localPlayer == null)
-        {
-            Debug.LogError("[SunController] Local player not found after waiting!");
-            yield break;
-        }
-
-        // Get the local player's seat index
         NetworkPlayer localPlayer = NetworkClient.localPlayer.GetComponent<NetworkPlayer>();
-        
-        if (localPlayer == null)
+        if (localPlayer == null) return;
+
+        int seat = localPlayer.CurrentSeatPosition;
+
+        if (seat == 0 || seat == 1)
         {
-            Debug.LogError("[SunController] NetworkPlayer component not found!");
-            yield break;
+            transform.eulerAngles = rotationSeats01;
+        }
+        else // seat 2 or 3
+        {
+            transform.eulerAngles = rotationSeats23;
         }
 
-        int seatIndex = localPlayer.PlayerIndex;
-        SetSunRotationForSeat(seatIndex);
-    }
-
-    /// <summary>
-    /// Set sun rotation based on player's seat.
-    /// </summary>
-    private void SetSunRotationForSeat(int seatIndex)
-    {
-        if (sunObject == null)
-        {
-            Debug.LogError("[SunController] Sun object not assigned!");
-            return;
-        }
-
-        Vector3 targetRotation;
-        string sideName;
-
-        // Seats 0 and 1 = South side (sun from North-West)
-        // Seats 2 and 3 = North side (sun from South-East)
-        if (seatIndex == 0 || seatIndex == 1)
-        {
-            targetRotation = southSideRotation;
-            sideName = "South (Seats 0-1)";
-        }
-        else // seatIndex == 2 || seatIndex == 3
-        {
-            targetRotation = northSideRotation;
-            sideName = "North (Seats 2-3)";
-        }
-
-        sunObject.transform.rotation = Quaternion.Euler(targetRotation);
-        
-        Debug.Log($"[SunController] Player in Seat {seatIndex} ({sideName}). Sun rotation set to {targetRotation}");
-    }
-
-    // Optional: Public method to manually set sun rotation
-    public void SetSunForSeat(int seatIndex)
-    {
-        SetSunRotationForSeat(seatIndex);
+        oriented = true;
+        Debug.Log($"[SunController] Sun oriented for Seat {seat}: {transform.eulerAngles}");
     }
 }
