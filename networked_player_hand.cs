@@ -2118,28 +2118,47 @@ public class NetworkedPlayerHand : NetworkBehaviour
         Debug.Log($"[PlayerHand] Ron check: {actuallyCanRon}");
 
         // Show UI if we have ANY interrupt option (Chi/Pon/Kong/Ron)
-        if (actuallyCanChi || actuallyCanPon || actuallyCanKong || actuallyCanRon)
+        bool hasAnyOption = actuallyCanChi || actuallyCanPon || actuallyCanKong || actuallyCanRon;
+        
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [PlayerHand] INTERRUPT DECISION POINT                     ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+        Debug.Log($"[PlayerHand] actuallyCanChi: {actuallyCanChi}");
+        Debug.Log($"[PlayerHand] actuallyCanPon: {actuallyCanPon}");
+        Debug.Log($"[PlayerHand] actuallyCanKong: {actuallyCanKong}");
+        Debug.Log($"[PlayerHand] actuallyCanRon: {actuallyCanRon}");
+        Debug.Log($"[PlayerHand] hasAnyOption: {hasAnyOption}");
+        Debug.Log($"[PlayerHand] interruptUI != null: {interruptUI != null}");
+        Debug.Log($"[PlayerHand] currentChiOptions.Count: {currentChiOptions.Count}");
+        
+        if (hasAnyOption)
         {
-            Debug.Log($"[PlayerHand] ✓ Showing interrupt UI - Chi:{actuallyCanChi}, Pon:{actuallyCanPon}, Kong:{actuallyCanKong}, Ron:{actuallyCanRon}");
+            Debug.Log($"[PlayerHand] ✓ Player HAS interrupt options");
             
             if (interruptUI != null)
             {
+                Debug.Log($"[PlayerHand] ✓ interruptUI exists - showing options");
                 interruptUI.ShowInterruptOptions(actuallyCanChi, actuallyCanPon, actuallyCanKong, actuallyCanRon, currentChiOptions, OnInterruptDecision);
+                Debug.Log($"[PlayerHand] ✓ ShowInterruptOptions() returned - UI should be visible");
+                Debug.Log($"[PlayerHand] ✓ Waiting for player to click a button...");
+                // CRITICAL: DO NOT auto-pass here! The player needs time to click!
             }
             else
             {
-                // CRITICAL FIX: If interruptUI is null but we have options, auto-pass to prevent stuck game
-                Debug.LogError($"[PlayerHand] interruptUI is NULL but we have interrupt options! Auto-passing to prevent game stuck.");
+                Debug.LogError($"[PlayerHand] ✗ interruptUI is NULL! Auto-passing to prevent stuck.");
                 CmdRespondToInterrupt(InterruptActionType.Pass);
             }
         }
         else
         {
-            // Auto-pass only if we have NO valid options (including Ron)
-            Debug.Log($"[PlayerHand] No valid interrupt options (including Ron), auto-passing");
+            Debug.Log($"[PlayerHand] ✗ Player has NO valid options - auto-passing");
             CmdRespondToInterrupt(InterruptActionType.Pass);
         }
-    }
+        
+        Debug.Log("╔════════════════════════════════════════════════════════════╗");
+        Debug.Log("║  [PlayerHand] END OF INTERRUPT DECISION POINT              ║");
+        Debug.Log("╚════════════════════════════════════════════════════════════╝");
+}
 
     public void OnInterruptDecision(InterruptActionType decision)
     {
