@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Channels;
+using Microsoft.VisualBasic;
 using UnityEngine;
 
 // NOTE: MahjongSuit enum and TileData class are assumed to be defined elsewhere.
@@ -29,6 +31,12 @@ public class PlayerHand : MonoBehaviour
     public static int PLAYER_WIND_SORT_VALUE = 402;
     public static int ROUND_WIND_SORT_VALUE = 401;
     public readonly int[] DRAGON_SORT_VALUES = { 501, 502, 503 };
+
+    
+    public static int MY_FLOWER_NUMBER = 1;
+    public bool isHandPure = false;
+
+    public List<List<TileData>> ValidMelds = new List<List<TileData>>();
     
     // --- Hand Management Methods ---
     public void AddToHand(TileData tile)
@@ -102,21 +110,23 @@ public class PlayerHand : MonoBehaviour
 
         HashSet<TileData> UniqueTiles = new HashSet<TileData>(functionalTiles);
 
-        foreach (TileData uniqueTile in UniqueTiles)
+        var groupedBySortValue = functionalTiles.GroupBy(s => s.GetSortValue());
+        List<List<TileData>> pairs = new List<List<TileData>>();
+
+        foreach (var group in groupedBySortValue)
         {
-            int count = 0;
-            foreach (TileData tile in functionalTiles)
+            List<TileData> tilesInGroup = group.ToList();
+            
+            if (tilesInGroup.Count >= 2)
             {
-                if (uniqueTile.GetSortValue() == tile.GetSortValue())
+                pairs.Add(new List<TileData> { tilesInGroup[0], tilesInGroup[1] });
+                
+                if (tilesInGroup.Count >= 3)
                 {
-                    count += 1;
+                    pons.Add(new List<TileData> { tilesInGroup[0], tilesInGroup[1], tilesInGroup[2] });
                 }
             }
-            if (count >= 3)
-            {
-                pons.Add(new List<TileData> { uniqueTile, uniqueTile, uniqueTile });
-            }
-        }      
+        } 
 
         List<List<TileData>> chis = new List<List<TileData>>();
 
@@ -138,7 +148,7 @@ public class PlayerHand : MonoBehaviour
                 }
             }
             
-            List<List<TileData>> tilesCopy = new List<string>(functionalTiles);
+            List<TileData> tilesCopy = new List<TileData>(functionalTiles);
 
             for (int i = 0; i < count; i++)
             {
@@ -151,56 +161,240 @@ public class PlayerHand : MonoBehaviour
                 {
                     List<TileData> chi = new List<TileData> { uniqueTile, secondTile, thirdTile };
                     chis.Add(chi);
-                    tilesCopy.Remove(t => t.GetSortValue() == startValue + 1);
-                    tilesCopy.Remove(t => t.GetSortValue() == startValue + 2);
+                    tilesCopy.Remove(secondTile);
+                    tilesCopy.Remove(thirdTile);
                 }
                 else
                 {
                     continue;
                 }
             }      
-        }
+        }   
 
-        List<List<TileData>> pairs = new List<List<TileData>>();
-
-        foreach (TileData uniqueTile in UniqueTiles)
+        List<List<TileData>> ponsAndChis = new List<List<TileData>>(pons);
+        ponsAndChis.AddRange(chis);
+        if (ponsAndChis.Count >= 4)
         {
-            int count = 0;
-            foreach (TileData tile in functionalTiles)
-            {
-                if (uniqueTile.GetSortValue() == tile.GetSortValue())
-                {
-                    count += 1;
-                }
-            }
-            if (count >= 2)
-            {
-                pairs.Add(new List<TileData> { uniqueTile, uniqueTile });
-            }
-        }      
-
-        List<List<TileData>> ponsAndChis = pons.AddRange(chis);
-        if (ponsAndChis >= 4)
-        {
-            IEnumerable<IEnumerable<string>> ponAndChiCombinations = ponsAndChis.Combinations(4);
+            IEnumerable<IEnumerable<List<TileData>>> ponAndChiCombinations = ponsAndChis.Combinations(4);
 
             foreach(List<List<TileData>> combination in ponAndChiCombinations)
             {
                 foreach(List<TileData> pair in pairs)
                 {
-                    List<List<TileData>> listOfLists = combination.AddRange(pair);
+                    List<List<TileData>> ListOfPonsChisPair = new List<List<TileData>>(combination);
+                    ListOfPonsChisPair.Add(pair);
                     List<TileData> potentialHand = new List<TileData>();
-                    listOfLists.ForEach(list => potentialHand.AddRange(list));
+                    ListOfPonsChisPair.ForEach(list => potentialHand.AddRange(list));
                     if (AreSameTiles(functionalTiles, potentialHand))
                     {
+                        ValidMelds = ListOfPonsChisPair;
                         return true;
                     }
                 }
             }
         }
+        if (IsPureHand(tiles))
+        {
+            isHandPure = true;
+            foreach(List<List<TileData>> combination in ponAndChiCombinations)
+            {
+                List<TileData> potentialHand = new List<TileData>();
+                combination.ForEach(list => potentialHand.AddRange(list));
+
+                if (ListChecker().ContainsAllElements(functionalTiles, potentialHand))
+                {
+                    ValidMelds = combination;
+                }
+            }
+        }
+        else
+        {
+            isHandPure = false;
+            ValidMelds = new List<List<TileData>>();
+        }
         return false;
     }
     
+    public CalculateScore(List<TileData> tiles)
+    {
+        score = 1;
+        bonusMessage = "Base Score: 1\n";
+
+        List<TileData> flowerTiles = tiles.Where(t => 
+            t.suit != MahjongSuit.Characters && t.suit != MahjongSuit.Circles && t.suit != MahjongSuit.Bamboos).ToList();
+
+        numOfMyFlowerTiles = 0;
+        numOfWrongFlowerTiles = 0;
+        foreach (TileData tile in flowerTiles)
+        {
+            if (tile.GetSortValue() % 100 == MY_FLOWER_NUMBER)
+            {
+                numOfMyFlowerTiles += 1;
+            }
+            else
+            {
+                numOfWrongFlowerTiles += 1;
+            }
+        }
+        if (numOfMyFlowerTiles == 2)
+        {
+            score += 1;
+            bonusMessage += $"Good Flowers: +1\n";
+        }
+        else if (numOfMyFlowerTiles == 0 && numOfWrongFlowerTiles > 0)
+        {
+            score -= 1;
+            bonusMessage += $"Bad Flower(s): -1\n";
+        }
+
+        List<TileData> functionalTiles = tiles.Where(t => 
+            t.suit != MahjongSuit.RedFlowers && t.suit != MahjongSuit.BlueFlower).ToList();
+
+        var groupedBySortValue = tiles.GroupBy(s => s.GetSortValue());
+        List<List<TileData>> pons = new List<List<TileData>>();
+        List<List<TileData>> chis = new List<List<TileData>>();
+        List<TileData> pair = new List<TileData>();
+        HashSet<MahjongSuit> suits = new HashSet<MahjongSuit>();
+        foreach (var meld in ValidMelds)
+        {
+            if (meld.Count() >= 3 )
+            {
+                if (meld[0].GetSortValue() == meld[1].GetSortValue())
+                {
+                    pons.Add(new List<TileData> { meld[0], meld[1], meld[2] });
+                }
+                else
+                {
+                    chis.Add(new List<TileData> { meld[0], meld[1], meld[2] });
+                }
+            }
+            else
+            {
+                pair = meld;
+            }
+            suits.Add(meld[0].suit);
+        } 
+
+        foreach (List<TileData> pon in pons)
+        {
+            if (pon[0].GetSortValue() == PLAYER_WIND_SORT_VALUE)
+            {
+                score += 1;
+                bonusMessage += "Seat Wind: +1\n";
+            }
+            if (pon[0].GetSortValue() == ROUND_WIND_SORT_VALUE)
+            {
+                score += 1;
+                bonusMessage += "Round Wind: +1\n";
+            }
+            foreach (int value in DRAGON_SORT_VALUES)
+            {
+                if (pon[0].GetSortValue() == value)
+                {
+                    score += 1;
+                    bonusMessage += "Dragon Triplet: +1\n";
+                }
+            }
+        } 
+        if (pons.Count == 4)
+            {
+                score += 2;
+                bonusMessage += "All Triples: +2\n";
+            }
+        if (chis.Count == 4)
+            {
+                score += 1;
+                bonusMessage += "All Straights: +1\n";
+            }
+        if (IsPureHand(functionalTiles))
+        {
+            if (CheckTraditionalMahjongStructure(tiles))
+            {
+                score += 4;
+                bonusMessage += "True Pure Hand: +4\n";
+            }
+            else
+            {
+                score += 3;
+                bonusMessage += "Pure Hand: +3\n";
+            }
+        }
+
+        bool isHalfHand = true;
+        if (suits.Count == 2)
+        {
+            List<HashSet<MahjongSuit>> InvalidSuitCombinations = new List<HashSet<MahjongSuit>>( HashSet<MahjongSuit.Bamboos, MahjongSuit.Characters>, HashSet<MahjongSuit.Characters, MahjongSuit.Circles>, HashSet<MahjongSuit.Bamboos, MahjongSuit.Circles>, HashSet<MahjongSuit.Dragons, MahjongSuit.Winds> );
+            foreach (var set in InvalidSuitCombinations)
+            {
+                if (suits == set)
+                {
+                    isHalfHand = false;
+                }
+            }
+            if (isHalfHand)
+            {
+                score += 2;
+                bonusMessage += "Half Hand: +2\n";
+            }
+        }
+        HashSet<TileData> UniqueTiles = new HashSet<TileData>(functionalTiles);
+        handSortValues = new List<int>();
+
+        foreach (TileData tile in UniqueTiles)
+        {
+            handSortValues.Add(tile.GetSortValue());
+        }
+        List<HashSet<int>> validDragonSortValues = new List<HashSet<int>>( HashSet< 101, 102, 103, 104, 105, 106, 107, 108, 109 >, HashSet< 201, 202, 203, 204, 205, 206, 207, 208, 209 >, HashSet< 301, 302, 303, 304, 305, 306, 307, 308, 309 > );
+        foreach (var validSet in validDragonSortValues)
+        {
+            if (validSet.IsSubsetOf(handSortValues))
+            {
+                score += 2;
+                bonusMessage += "Dragon (Full Straight): +2\n";
+            }
+        }
+        return (score, bonusMessage);
+    }
+
+    public bool IsPureHand(List<TileData> tiles)
+    {
+        MahjongSuit suit = tiles[0].suit;
+        foreach (var tile in tiles)
+            {
+                if (suit != tile.suit)
+                {
+                    return false;
+                }
+            }
+        return true;
+    }
+
+    public bool IsSevenpairs(List<TileData> tiles)
+    {
+        var groupedBySortValue = functionalTiles.GroupBy(s => s.GetSortValue());
+        foreach (var group in groupedBySortValue)
+        {
+            List<TileData> tilesInGroup = group.ToList();
+            
+            if (tilesInGroup.Count != 2 && tilesInGroup.Count != 4)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public bool IsThirteenOrphans(List<TileData> tiles)
+    {
+        HashSet<int> requiredSortValues = new HashSet<int> { 101, 109, 201, 209, 301, 309, 401, 402, 501, 502, 503 };
+        HashSet<int> handSortValues = new HashSet<int>(tiles.Select(t => t.GetSortValue()));
+        if (requiredSortValues.IsSubsetOf(handSortValues) && handSortValues.Count == 13)
+        {
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Separates tiles into 5 suit groups: Circles, Bamboos, Characters, Winds, Dragons
     /// </summary>
@@ -581,6 +775,15 @@ public class PlayerHand : MonoBehaviour
             return k == 0 ? new[] { Enumerable.Empty<T>() } :
             elements.SelectMany((e, i) =>
                 elements.Skip(i + 1).Combinations(k - 1).Select(c => new[] { e }.Concat(c)));
+        }
+    }
+
+    public class ListChecker
+    {
+        public static bool ContainsAllElements<T>(List<T> supersetList, List<T> subsetList)
+        {
+            // Check if all items in subsetList are present in supersetList
+            return subsetList.All(item => supersetList.Contains(item));
         }
     }
 }
