@@ -1,179 +1,220 @@
 using UnityEngine;
 using Mirror;
+using System.Linq;
 
 public class NetworkedClickableTile : MonoBehaviour
 {
-    // REMOVE the cached playerHand field - we'll get it fresh each time
-    // private NetworkedPlayerHand playerHand;  ← DELETE THIS
+    // Cache the player hand once found
+    private NetworkedPlayerHand cachedPlayerHand = null;
+    private bool hasLoggedSearchAttempt = false;
     
     void Start()
     {
-        // We no longer cache the reference in Start()
-        // Just verify we can find it
-        NetworkedPlayerHand hand = GetLocalPlayerHand();
-        if (hand == null)
-        {
-            Debug.LogError($"[ClickableTile] Could not find local player hand in Start!");
-        }
-        else
-        {
-            Debug.Log($"[ClickableTile] Found local player hand: {hand.gameObject.name}");
-        }
+        TryFindPlayerHand();
     }
     
     /// <summary>
-    /// Get the local player's hand FRESH every time
+    /// Try EVERY possible way to find NetworkedPlayerHand
     /// </summary>
-    private NetworkedPlayerHand GetLocalPlayerHand()
+    private bool TryFindPlayerHand()
     {
-        NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
-        if (localPlayer == null)
+        if (cachedPlayerHand != null)
         {
-            return null;
+            return true;
         }
         
-        return localPlayer.GetComponent<NetworkedPlayerHand>();
+        // METHOD 1: Try NetworkClient.localPlayer
+        if (NetworkClient.localPlayer != null)
+        {
+            // Try GetComponent first
+            cachedPlayerHand = NetworkClient.localPlayer.GetComponent<NetworkedPlayerHand>();
+            if (cachedPlayerHand != null)
+            {
+                Debug.Log($"[ClickableTile] ✓ Found via GetComponent");
+                return true;
+            }
+            
+            // Try GetComponentInChildren
+            cachedPlayerHand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>(true);
+            if (cachedPlayerHand != null)
+            {
+                Debug.Log($"[ClickableTile] ✓ Found via GetComponentInChildren");
+                return true;
+            }
+            
+            // Try finding by searching all components
+            var allComponents = NetworkClient.localPlayer.GetComponents<Component>();
+            Debug.Log($"[ClickableTile] LocalPlayer has {allComponents.Length} components:");
+            foreach (var comp in allComponents)
+            {
+                if (comp != null)
+                {
+                    Debug.Log($"[ClickableTile]   - {comp.GetType().Name}");
+                    if (comp.GetType().Name.Contains("PlayerHand"))
+                    {
+                        cachedPlayerHand = comp as NetworkedPlayerHand;
+                        if (cachedPlayerHand != null)
+                        {
+                            Debug.Log($"[ClickableTile] ✓ Found by type name matching!");
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // METHOD 2: Search all NetworkBehaviours for NetworkedPlayerHand with isOwned
+        var allBehaviours = FindObjectsByType<NetworkBehaviour>(FindObjectsSortMode.None);
+        foreach (var behaviour in allBehaviours)
+        {
+            if (behaviour.isOwned && behaviour is NetworkedPlayerHand)
+            {
+                cachedPlayerHand = behaviour as NetworkedPlayerHand;
+                Debug.Log($"[ClickableTile] ✓ Found by searching all NetworkBehaviours");
+                return true;
+            }
+        }
+        
+        if (!hasLoggedSearchAttempt)
+        {
+            Debug.LogError($"[ClickableTile] EXHAUSTED ALL SEARCH METHODS - CANNOT FIND NetworkedPlayerHand!");
+            hasLoggedSearchAttempt = true;
+        }
+        
+        return false;
+    }
+    
+    private NetworkedPlayerHand GetLocalPlayerHand()
+    {
+        if (cachedPlayerHand != null)
+        {
+            return cachedPlayerHand;
+        }
+        
+        TryFindPlayerHand();
+        return cachedPlayerHand;
     }
 
     void OnMouseDown()
     {
-        Debug.Log($"[ClickableTile] ========================================");
-        Debug.Log($"[ClickableTile] OnMouseDown called");
-        
-        // GET FRESH REFERENCE
         NetworkedPlayerHand playerHand = GetLocalPlayerHand();
         
         if (playerHand == null)
         {
-            Debug.LogError($"[ClickableTile] playerHand is NULL!");
-            Debug.Log($"[ClickableTile] ========================================");
+            Debug.LogError($"[ClickableTile] Cannot interact - player hand not found");
             return;
         }
-        
-        Debug.Log($"[ClickableTile] Found playerHand: {playerHand.gameObject.name}");
 
         TileData tileData = GetComponent<TileData>();
         if (tileData == null)
         {
             Debug.LogError($"[ClickableTile] TileData is NULL!");
-            Debug.Log($"[ClickableTile] ========================================");
             return;
         }
         
         int tileValue = tileData.GetSortValue();
-        Debug.Log($"[ClickableTile] Tile value: {tileValue}");
 
         // CHECK CHI SELECTION MODE
         bool inChiMode = playerHand.IsInChiSelectionMode;
-        Debug.Log($"[ClickableTile] IsInChiSelectionMode: {inChiMode}");
 
         // PRIORITY 1: CHI SELECTION MODE
         if (inChiMode)
         {
-            Debug.Log($"[ClickableTile] IN CHI SELECTION MODE");
-            Debug.Log($"[ClickableTile] Calling OnChiTileClicked({tileValue})");
             playerHand.OnChiTileClicked(tileValue);
-            Debug.Log($"[ClickableTile] ========================================");
             return;
         }
-        
-        Debug.Log($"[ClickableTile] Not in Chi selection mode");
 
         // PRIORITY 2: CHECK IF IT'S OUR TURN
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
+            NetworkPlayer localPlayer = null;
+            if (NetworkClient.localPlayer != null)
+            {
+                localPlayer = NetworkClient.localPlayer.GetComponent<NetworkPlayer>();
+            }
+            else
+            {
+                NetworkPlayer[] players = FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None);
+                foreach (var p in players)
+                {
+                    if (p.isOwned)
+                    {
+                        localPlayer = p;
+                        break;
+                    }
+                }
+            }
+            
             if (localPlayer == null)
             {
-                Debug.LogError($"[ClickableTile] Local player not found!");
-                Debug.Log($"[ClickableTile] ========================================");
+                Debug.LogWarning("[ClickableTile] Cannot find local player to check turn");
                 return;
             }
 
             int localSeat = localPlayer.PlayerIndex;
             int currentTurn = NetworkedGameManager.Instance.CurrentPlayerIndex;
-            
-            Debug.Log($"[ClickableTile] My seat: {localSeat}, Current turn: {currentTurn}");
 
             if (localSeat != currentTurn)
             {
-                Debug.Log($"[ClickableTile] Not your turn - ignoring click");
-                Debug.Log($"[ClickableTile] ========================================");
+                Debug.Log($"[ClickableTile] Not your turn (Seat {localSeat}, Turn {currentTurn})");
                 return;
             }
-            
-            Debug.Log($"[ClickableTile] It IS my turn, proceeding...");
         }
 
         // PRIORITY 3: KONG SELECTION MODE
         if (playerHand.IsSelectingKong)
         {
-            Debug.Log($"[ClickableTile] IN KONG SELECTION MODE");
-            
             if (playerHand.AvailableKongValues.Contains(tileValue))
             {
-                Debug.Log($"[ClickableTile] Valid Kong tile - executing Kong");
                 playerHand.ExecuteKong(tileValue);
-                Debug.Log($"[ClickableTile] ========================================");
                 return;
             }
             else
             {
-                Debug.Log($"[ClickableTile] Not a valid Kong tile - ignoring");
-                Debug.Log($"[ClickableTile] ========================================");
                 return;
             }
         }
 
         // PRIORITY 4: NORMAL DISCARD
-        Debug.Log($"[ClickableTile] Normal discard mode");
-        Debug.Log($"[ClickableTile] Calling DiscardAndDrawTile");
+        Debug.Log($"[ClickableTile] Discarding tile {tileValue}");
         playerHand.DiscardAndDrawTile(transform.position, gameObject);
-        Debug.Log($"[ClickableTile] ========================================");
     }
     
     void OnMouseEnter()
     {
-        Debug.Log($"[ClickableTile] OnMouseEnter called");
-        
-        // GET FRESH REFERENCE
         NetworkedPlayerHand playerHand = GetLocalPlayerHand();
         
         if (playerHand == null)
         {
-            Debug.LogError($"[ClickableTile] playerHand is NULL!");
             return;
         }
 
         TileData tileData = GetComponent<TileData>();
         if (tileData == null)
         {
-            Debug.LogError($"[ClickableTile] TileData is NULL!");
             return;
         }
         
         int sortValue = tileData.GetSortValue();
-        Debug.Log($"[ClickableTile] Tile sort value: {sortValue}");
 
-        // === NEW: ALWAYS HIGHLIGHT MATCHING TILES ===
         playerHand.HighlightMatchingTiles(sortValue);
 
-        // CHECK CHI SELECTION MODE
         bool inChiMode = playerHand.IsInChiSelectionMode;
-        Debug.Log($"[ClickableTile] IsInChiSelectionMode: {inChiMode}");
 
-        // PRIORITY 1: Chi selection mode
         if (inChiMode)
         {
-            Debug.Log($"[ClickableTile] IN CHI SELECTION MODE - calling OnChiTileHovered");
             playerHand.OnChiTileHovered(sortValue, transform.position);
             return;
         }
 
-        // PRIORITY 2: Normal Tenpai check
         if (NetworkedGameManager.Instance != null)
         {
-            NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
+            NetworkPlayer localPlayer = null;
+            if (NetworkClient.localPlayer != null)
+            {
+                localPlayer = NetworkClient.localPlayer.GetComponent<NetworkPlayer>();
+            }
+            
             if (localPlayer == null) return;
             
             int localSeat = localPlayer.PlayerIndex;
@@ -194,8 +235,6 @@ public class NetworkedClickableTile : MonoBehaviour
         if (playerHand != null)
         {
             playerHand.HideTenpaiVisuals();
-            
-            // === NEW: CLEAR ALL HIGHLIGHTS ===
             playerHand.ClearAllHighlights();
         }
     }

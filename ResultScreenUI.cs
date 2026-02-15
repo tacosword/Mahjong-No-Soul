@@ -17,7 +17,6 @@ public class ResultScreenUI : MonoBehaviour
     public TextMeshProUGUI totalScoreText;
     
     [Header("2D Tile Display")]
-    public WinningHandDisplay2D tileDisplay2D;
     
     [Header("Action Buttons")]
     public Button continueButton;
@@ -88,10 +87,6 @@ public class ResultScreenUI : MonoBehaviour
             totalScoreText.text = $"Total Score: {totalScore}";
         }
         
-        if (tileDisplay2D != null)
-        {
-            tileDisplay2D.DisplayWinningHand(winnerSeatIndex, winningTileSortValues);
-        }
     }
 
     private string BuildScoreDetails(HandAnalysisResult analysis, List<string> flowerMessages = null)
@@ -236,11 +231,6 @@ public class ResultScreenUI : MonoBehaviour
         if (resultPanel != null)
         {
             resultPanel.SetActive(false);
-        }
-        
-        if (tileDisplay2D != null)
-        {
-            tileDisplay2D.ClearDisplay();
         }
     }
 

@@ -60,6 +60,17 @@ public class NetworkPlayer : NetworkBehaviour
         }
     }
 
+    public override void OnStartLocalPlayer()
+    {
+        base.OnStartLocalPlayer();
+        
+        Debug.Log($"[NetworkPlayer] ✓ OnStartLocalPlayer() called for {gameObject.name}");
+        Debug.Log($"[NetworkPlayer] ✓ NetworkClient.localPlayer is now SET!");
+        
+        // CRITICAL: This callback tells Mirror to set NetworkClient.localPlayer
+        // Without this method, NetworkClient.localPlayer stays NULL!
+    }
+
     public override void OnStartClient()
     {
         base.OnStartClient();
@@ -154,7 +165,7 @@ public class NetworkPlayer : NetworkBehaviour
     
     private void OnSeatPositionChanged(int oldSeat, int newSeat)
     {
-        Debug.Log($"[NetworkPlayer] {Username} seat changed: {oldSeat} → {newSeat}");
+        Debug.Log($"[NetworkPlayer] {Username} seat changed: {oldSeat} â†’ {newSeat}");
         
         // If this is the local player and we're in the Game scene, update camera
         if (isOwned && UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "Game")

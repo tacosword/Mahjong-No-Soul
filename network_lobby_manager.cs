@@ -7,13 +7,14 @@ using System.Collections;
 
 /// <summary>
 /// Manages the game lobby, player list, and ready status.
+/// Compatible with the new NetworkedGameManager system.
 /// </summary>
 public class NetworkLobbyManager : NetworkBehaviour
 {
     public static NetworkLobbyManager Instance { get; private set; }
 
     [Header("Settings")]
-    [SerializeField] private int minPlayersToStart = 2;
+    [SerializeField] private int minPlayersToStart = 1; // Changed to 1 so you can test solo with bots
     [SerializeField] private int maxPlayers = 4;
 
     // Track all players in the lobby
@@ -25,25 +26,23 @@ public class NetworkLobbyManager : NetworkBehaviour
 
     void Awake()
     {
-        Debug.Log($"NetworkLobbyManager Awake() called. Current Instance: {Instance}");
+        Debug.Log($"[LobbyManager] Awake() called. Current Instance: {Instance}");
         
         if (Instance != null && Instance != this)
         {
-            Debug.LogWarning($"Duplicate NetworkLobbyManager found! Destroying {gameObject.name}");
+            Debug.LogWarning($"[LobbyManager] Duplicate NetworkLobbyManager found! Destroying {gameObject.name}");
             Destroy(gameObject);
             return;
         }
         
         Instance = this;
-        
-        // IMPORTANT: Only call DontDestroyOnLoad if we're keeping this instance
         DontDestroyOnLoad(gameObject);
-        Debug.Log($"NetworkLobbyManager instance set and marked DontDestroyOnLoad. GameObject: {gameObject.name}");
+        Debug.Log($"[LobbyManager] Instance set and marked DontDestroyOnLoad. GameObject: {gameObject.name}");
     }
     
     void Start()
     {
-        Debug.Log($"NetworkLobbyManager Start() called. Instance is: {Instance != null}");
+        Debug.Log($"[LobbyManager] Start() called. Instance is: {Instance != null}");
     }
     
     void OnEnable()
@@ -57,52 +56,53 @@ public class NetworkLobbyManager : NetworkBehaviour
     }
     
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
-{
-    Debug.Log($"[Lobby] Scene loaded: {scene.name}");
-    Debug.Log($"[Lobby] Current lobbyPlayers count: {lobbyPlayers.Count}");
-    
-    // Verify instance is still valid after scene load
-    if (Instance == null)
     {
-        Debug.LogError("[Lobby] Instance became NULL after scene load!");
-        Instance = this;
+        Debug.Log($"[LobbyManager] Scene loaded: {scene.name}");
+        Debug.Log($"[LobbyManager] Current lobbyPlayers count: {lobbyPlayers.Count}");
+        
+        // Verify instance is still valid after scene load
+        if (Instance == null)
+        {
+            Debug.LogError("[LobbyManager] Instance became NULL after scene load!");
+            Instance = this;
+        }
+        
+        // Clear players when returning to main menu
+        if (scene.name == "MainMenu")
+        {
+            Debug.Log("[LobbyManager] Returned to MainMenu. Clearing lobby players.");
+            lobbyPlayers.Clear();
+            gameStarted = false;
+        }
+        else if (scene.name == "Lobby")
+        {
+            Debug.Log("[LobbyManager] Now in Lobby scene.");
+            UpdatePlayerList();
+        }
+        else if (scene.name == "Game")
+        {
+            Debug.Log("[LobbyManager] ✓ Game scene loaded!");
+            OnGameSceneLoaded();
+        }
     }
-    
-    // Clear players when returning to main menu
-    if (scene.name == "MainMenu")
-    {
-        Debug.Log("[Lobby] Returned to MainMenu. Clearing lobby players.");
-        lobbyPlayers.Clear();
-    }
-    else if (scene.name == "Lobby")
-    {
-        Debug.Log("[Lobby] Now in Lobby scene.");
-        UpdatePlayerList();
-    }
-    else if (scene.name == "Game")
-    {
-        Debug.Log("[Lobby] âœ“ Game scene loaded!");
-        // Just call it - let the method handle the server check
-        OnGameSceneLoaded();
-    }
-}
 
-// Initialize game after scene load by checking for the game manager
-public void OnGameSceneLoaded()
-{
-    // IMPORTANT: Check if we're on the server
-    // Only initialize game if we are the server (which includes host)
-    if (!NetworkServer.active)
+    /// <summary>
+    /// Initialize game after scene load by checking for the game manager
+    /// </summary>
+    public void OnGameSceneLoaded()
     {
-        Debug.Log("[Lobby] Not the server. Skipping game initialization. (Client-only)");
-        return;
+        // IMPORTANT: Check if we're on the server
+        if (!NetworkServer.active)
+        {
+            Debug.Log("[LobbyManager] Not the server. Skipping game initialization. (Client-only)");
+            return;
+        }
+        
+        Debug.Log("[LobbyManager] We are the server/host. Starting game initialization...");
+        Debug.Log($"[LobbyManager] Players available: {lobbyPlayers.Count}");
+        
+        StartCoroutine(InitializeGameAfterSceneLoad());
     }
-    
-    Debug.Log("[Lobby] We are the server/host. Starting game initialization...");
-    Debug.Log($"[Lobby] Players available: {lobbyPlayers.Count}");
-    
-    StartCoroutine(InitializeGameAfterSceneLoad());
-}
 
     /// <summary>
     /// Register a player when they connect to the lobby.
@@ -111,7 +111,7 @@ public void OnGameSceneLoaded()
     {
         if (player == null)
         {
-            Debug.LogWarning("Tried to register null player!");
+            Debug.LogWarning("[LobbyManager] Tried to register null player!");
             return;
         }
         
@@ -119,20 +119,20 @@ public void OnGameSceneLoaded()
         {
             lobbyPlayers.Add(player);
             
-            Debug.Log($"Player registered: {player.Username} (Total players: {lobbyPlayers.Count})");
+            Debug.Log($"[LobbyManager] Player registered: {player.Username} (Total players: {lobbyPlayers.Count})");
             
-            // Assign player index (seat position) - Use NetworkServer.active instead of isServer
+            // Assign player index (seat position)
             if (NetworkServer.active)
             {
                 player.SetPlayerIndex(lobbyPlayers.Count - 1);
-                Debug.Log($"Assigned seat index {lobbyPlayers.Count - 1} to {player.Username}");
+                Debug.Log($"[LobbyManager] Assigned seat index {lobbyPlayers.Count - 1} to {player.Username}");
             }
 
             UpdatePlayerList();
         }
         else
         {
-            Debug.LogWarning($"Player {player.Username} already registered!");
+            Debug.LogWarning($"[LobbyManager] Player {player.Username} already registered!");
         }
     }
 
@@ -145,7 +145,7 @@ public void OnGameSceneLoaded()
         {
             lobbyPlayers.Remove(player);
             UpdatePlayerList();
-            Debug.Log($"Player unregistered: {player.Username}");
+            Debug.Log($"[LobbyManager] Player unregistered: {player.Username}");
         }
     }
 
@@ -154,7 +154,7 @@ public void OnGameSceneLoaded()
     /// </summary>
     public void UpdatePlayerList()
     {
-        Debug.Log($"UpdatePlayerList() called. Total players: {lobbyPlayers.Count}");
+        Debug.Log($"[LobbyManager] UpdatePlayerList() called. Total players: {lobbyPlayers.Count}");
         
         if (LobbyUI.Instance != null)
         {
@@ -162,7 +162,7 @@ public void OnGameSceneLoaded()
         }
         else
         {
-            Debug.LogWarning("LobbyUI.Instance is NULL! Cannot update player list.");
+            Debug.LogWarning("[LobbyManager] LobbyUI.Instance is NULL! Cannot update player list.");
         }
     }
 
@@ -174,7 +174,7 @@ public void OnGameSceneLoaded()
     {
         if (lobbyPlayers.Count < minPlayersToStart)
         {
-            Debug.Log($"Not enough players to start ({lobbyPlayers.Count}/{minPlayersToStart})");
+            Debug.Log($"[LobbyManager] Not enough players to start ({lobbyPlayers.Count}/{minPlayersToStart})");
             return;
         }
 
@@ -183,18 +183,15 @@ public void OnGameSceneLoaded()
 
         if (allReady)
         {
-            Debug.Log("All players ready! Starting game...");
+            Debug.Log("[LobbyManager] All players ready! Starting game...");
             StartGame();
         }
         else
         {
-            Debug.Log("Waiting for all players to ready up...");
+            Debug.Log("[LobbyManager] Waiting for all players to ready up...");
         }
     }
 
-    /// <summary>
-    /// Server starts the game when all players are ready.
-    /// </summary>
     /// <summary>
     /// Server starts the game when all players are ready.
     /// </summary>
@@ -203,80 +200,92 @@ public void OnGameSceneLoaded()
     {
         gameStarted = true;
         
-        Debug.Log("All players ready! Starting game...");
+        Debug.Log("[LobbyManager] ✓ All players ready! Starting game...");
         
         // Load the game scene for all clients
         NetworkManager.singleton.ServerChangeScene("Game");
     }
 
-    // Initialize game after scene load by checking for the game manager
-
+    /// <summary>
+    /// Wait for Game scene to load, then initialize the NetworkedGameManager
+    /// </summary>
     [Server]
-
-private System.Collections.IEnumerator InitializeGameAfterSceneLoad()
-{
-    Debug.Log("[Lobby] Waiting for Game scene to fully load...");
-    Debug.Log($"[Lobby] Players available to start game: {lobbyPlayers.Count}");
-    
-    // Log player details
-    for (int i = 0; i < lobbyPlayers.Count; i++)
+    private System.Collections.IEnumerator InitializeGameAfterSceneLoad()
     {
-        if (lobbyPlayers[i] != null)
+        Debug.Log("[LobbyManager] Waiting for Game scene to fully load...");
+        Debug.Log($"[LobbyManager] Players available to start game: {lobbyPlayers.Count}");
+        
+        // Log player details
+        for (int i = 0; i < lobbyPlayers.Count; i++)
         {
-            Debug.Log($"[Lobby] Player {i}: {lobbyPlayers[i].Username}, Seat: {lobbyPlayers[i].PlayerIndex}");
+            if (lobbyPlayers[i] != null)
+            {
+                Debug.Log($"[LobbyManager] Player {i}: {lobbyPlayers[i].Username}, Seat: {lobbyPlayers[i].PlayerIndex}");
+            }
+            else
+            {
+                Debug.LogWarning($"[LobbyManager] Player {i} is NULL!");
+            }
+        }
+        
+        // Wait for scene to stabilize
+        yield return new WaitForSeconds(1f);
+        
+        // Try to find NetworkedGameManager
+        NetworkedGameManager gameManager = null;
+        int attempts = 0;
+        int maxAttempts = 10;
+        
+        while (gameManager == null && attempts < maxAttempts)
+        {
+            gameManager = NetworkedGameManager.Instance;
+            
+            // Fallback: try FindFirstObjectByType if Instance is null
+            if (gameManager == null)
+            {
+                gameManager = FindFirstObjectByType<NetworkedGameManager>();
+            }
+            
+            if (gameManager == null)
+            {
+                Debug.LogWarning($"[LobbyManager] Attempt {attempts + 1}/{maxAttempts}: NetworkedGameManager not found. Retrying...");
+                yield return new WaitForSeconds(0.5f);
+            }
+            
+            attempts++;
+        }
+        
+        if (gameManager != null)
+        {
+            Debug.Log("[LobbyManager] ✓ Found NetworkedGameManager!");
+            
+            // Double-check we still have players
+            if (lobbyPlayers.Count > 0)
+            {
+                Debug.Log($"[LobbyManager] ✓ Calling InitializeGame() with {lobbyPlayers.Count} players");
+                
+                // FIXED: Call InitializeGame instead of StartGame
+                gameManager.InitializeGame(GetPlayers());
+                
+                Debug.Log("[LobbyManager] ✓ Game initialization complete!");
+            }
+            else
+            {
+                Debug.LogError("[LobbyManager] ✗ CRITICAL: No players in lobby! Cannot start game.");
+            }
         }
         else
         {
-            Debug.LogWarning($"[Lobby] Player {i} is NULL!");
+            Debug.LogError("[LobbyManager] ✗ CRITICAL: NetworkedGameManager not found in Game scene!");
+            Debug.LogError("[LobbyManager] Make sure you have a GameObject with NetworkedGameManager component in the Game scene!");
         }
     }
     
-    // Wait for scene to stabilize
-    yield return new WaitForSeconds(2f);
-    
-    // Try to find NetworkedGameManager
-    NetworkedGameManager gameManager = null;
-    int attempts = 0;
-    int maxAttempts = 5;
-    
-    while (gameManager == null && attempts < maxAttempts)
-    {
-        gameManager = FindFirstObjectByType<NetworkedGameManager>();
-        
-        if (gameManager == null)
-        {
-            Debug.LogWarning($"[Lobby] Attempt {attempts + 1}/{maxAttempts}: NetworkedGameManager not found. Retrying...");
-            yield return new WaitForSeconds(0.5f);
-        }
-        
-        attempts++;
-    }
-    
-    if (gameManager != null)
-    {
-        Debug.Log("[Lobby] âœ“ Found NetworkedGameManager!");
-        
-        // Double-check we still have players
-        if (lobbyPlayers.Count > 0)
-        {
-            Debug.Log($"[Lobby] Starting game with {lobbyPlayers.Count} players");
-            gameManager.StartGame(GetPlayers());
-        }
-        else
-        {
-            Debug.LogError("[Lobby] âœ— CRITICAL: No players in lobby! Cannot start game.");
-        }
-    }
-    else
-    {
-        Debug.LogError("[Lobby] âœ— CRITICAL: NetworkedGameManager not found in Game scene!");
-    }
-}
     private void OnGameStateChanged(bool oldState, bool newState)
     {
         if (newState)
         {
-            Debug.Log("Game is starting!");
+            Debug.Log("[LobbyManager] Game is starting!");
             
             // Hide lobby UI
             if (LobbyUI.Instance != null)
@@ -315,16 +324,23 @@ private System.Collections.IEnumerator InitializeGameAfterSceneLoad()
     /// </summary>
     public void OnGameSceneReloaded()
     {
-        Debug.Log("[Lobby] Game scene reloaded for new round");
+        Debug.Log("[LobbyManager] Game scene reloaded for new round");
         
         if (!NetworkServer.active)
         {
-            Debug.Log("[Lobby] Not server - skipping reload initialization");
+            Debug.Log("[LobbyManager] Not server - skipping reload initialization");
             return;
         }
         
         // The game manager will handle the reload automatically
-        // We just need to call OnGameSceneLoaded again
         OnGameSceneLoaded();
+    }
+    
+    void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
     }
 }

@@ -13,6 +13,10 @@ public class MahjongNetworkManager : NetworkManager
     [Header("Mahjong Game Settings")]
     [SerializeField] private int maxPlayers = 4;
     
+    [Header("Tile Prefabs - CRITICAL")]
+    [Tooltip("Assign all 136 tile prefabs here")]
+    [SerializeField] private GameObject[] tilePrefabs;
+    
     [Header("Scene References")]
     [SerializeField] private string lobbySceneName = "Lobby";
     [SerializeField] private string gameSceneName = "Game";
@@ -40,7 +44,35 @@ public class MahjongNetworkManager : NetworkManager
         }
         
         base.Awake();
+        
+        // CRITICAL: Register tile prefabs for spawning
+        RegisterTilePrefabs();
+        
         DontDestroyOnLoad(gameObject);
+    }
+
+    /// <summary>
+    /// Register all tile prefabs. Runs on both server and client.
+    /// </summary>
+    private void RegisterTilePrefabs()
+    {
+        if (tilePrefabs == null || tilePrefabs.Length == 0)
+        {
+            Debug.LogWarning("[NetworkManager] No tile prefabs assigned!");
+            return;
+        }
+
+        int count = 0;
+        foreach (GameObject prefab in tilePrefabs)
+        {
+            if (prefab != null && !spawnPrefabs.Contains(prefab))
+            {
+                spawnPrefabs.Add(prefab);
+                count++;
+            }
+        }
+        
+        Debug.Log($"[NetworkManager] Registered {count} tile prefabs. Total: {spawnPrefabs.Count}");
     }
 
     #region Server Callbacks
