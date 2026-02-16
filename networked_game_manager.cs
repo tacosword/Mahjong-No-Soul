@@ -72,6 +72,12 @@ public class NetworkedGameManager : NetworkBehaviour
     private readonly SyncList<uint> seat2Discards = new SyncList<uint>();
     private readonly SyncList<uint> seat3Discards = new SyncList<uint>();
     
+    // Track flower tiles for each seat (displayed in 2x4 grid)
+    private readonly SyncList<uint> seat0Flowers = new SyncList<uint>();
+    private readonly SyncList<uint> seat1Flowers = new SyncList<uint>();
+    private readonly SyncList<uint> seat2Flowers = new SyncList<uint>();
+    private readonly SyncList<uint> seat3Flowers = new SyncList<uint>();
+    
     // Player management
     private readonly NetworkPlayer[] players = new NetworkPlayer[4];
     private readonly bool[] isBot = new bool[4]; // Track which seats are bots
@@ -164,6 +170,9 @@ public class NetworkedGameManager : NetworkBehaviour
         // Dealer (seat matching dealerSeat) gets 14 tiles, others get 13
         DrawTileForSeat(dealerSeat);
         
+        // Reposition dealer's hand with the drawn tile
+        PositionHandTiles(dealerSeat);
+        
         Debug.Log($"[GameManager] Round started. Dealer is seat {dealerSeat}, current turn: {currentPlayerIndex}");
     }
 
@@ -221,13 +230,23 @@ public class NetworkedGameManager : NetworkBehaviour
             }
         }
         
+        // Add flower tiles (601-604 and 701-704, one of each = 8 total)
+        for (int value = 601; value <= 604; value++)
+        {
+            tempWall.Add(value);
+        }
+        for (int value = 701; value <= 704; value++)
+        {
+            tempWall.Add(value);
+        }
+        
         // Add to sync list
         foreach (int tile in tempWall)
         {
             wall.Add(tile);
         }
         
-        Debug.Log($"[GameManager] Wall built with {wall.Count} tiles");
+        Debug.Log($"[GameManager] Wall built with {wall.Count} tiles (including 8 flowers)");
     }
 
     [Server]
@@ -260,20 +279,22 @@ public class NetworkedGameManager : NetworkBehaviour
     {
         Debug.Log("[GameManager] Dealing initial hands (13 tiles each)");
         
-        // Deal 13 tiles to each seat
+        // Deal 13 tiles to each seat - use DrawTileToHand to add to hand only
         for (int round = 0; round < 13; round++)
         {
             for (int seat = 0; seat < 4; seat++)
             {
-                DrawTileForSeat(seat);
+                DrawTileToHand(seat);
             }
         }
         
-        // Sort all hands
+        // Sort and position all hands
         for (int seat = 0; seat < 4; seat++)
         {
             SortHandForSeat(seat);
         }
+        
+        Debug.Log("[GameManager] Initial deal complete: all players have 13 sorted tiles in hand");
     }
 
     [Server]
@@ -302,22 +323,109 @@ public class NetworkedGameManager : NetworkBehaviour
         uint netId = tileObj.GetComponent<NetworkIdentity>().netId;
         spawnedTiles[netId] = tileObj;
         
-        // During a turn, put in drawn slot. During initial deal, put in hand.
-        uint currentDrawn = GetDrawnTileForSeat(seatIndex);
-
-        if (currentDrawn != 0)
+        // Check if it's a flower
+        if (IsFlowerTile(tileValue))
         {
-            // Drawn slot occupied, add to hand
+            // Add to flower collection
+            SyncList<uint> flowers = GetFlowersForSeat(seatIndex);
+            if (flowers != null)
+            {
+                flowers.Add(netId);
+                Debug.Log($"[GameManager] Seat {seatIndex} drew flower {tileValue} -> replacing");
+                
+                // Position flower
+                PositionFlowerTiles(seatIndex);
+                
+                // Draw replacement tile (recursive)
+                DrawTileForSeat(seatIndex);
+            }
+        }
+        else
+        {
+            // Add normal tile to drawn slot
+            SetDrawnTileForSeat(seatIndex, netId);
+            Debug.Log($"[GameManager] Drew tile {tileValue} for seat {seatIndex} -> drawn slot");
+        }
+    }
+    
+    /// <summary>
+    /// Draw tile directly to hand (for initial dealing)
+    /// Handles flower tiles automatically
+    /// </summary>
+    [Server]
+    private void DrawTileToHand(int seatIndex)
+    {
+        if (wallIndex >= wall.Count)
+        {
+            Debug.LogError("[GameManager] No more tiles in wall!");
+            return;
+        }
+        
+        int tileValue = wall[wallIndex];
+        wallIndex++;
+        
+        // Spawn the tile
+        GameObject tilePrefab = GetTilePrefab(tileValue);
+        if (tilePrefab == null)
+        {
+            Debug.LogError($"[GameManager] No prefab found for tile value {tileValue}");
+            return;
+        }
+        
+        GameObject tileObj = Instantiate(tilePrefab, Vector3.zero, Quaternion.identity);
+        NetworkServer.Spawn(tileObj);
+        
+        uint netId = tileObj.GetComponent<NetworkIdentity>().netId;
+        spawnedTiles[netId] = tileObj;
+        
+        // Check if it's a flower
+        if (IsFlowerTile(tileValue))
+        {
+            // Add to flower collection
+            SyncList<uint> flowers = GetFlowersForSeat(seatIndex);
+            if (flowers != null)
+            {
+                flowers.Add(netId);
+                Debug.Log($"[GameManager] Seat {seatIndex} drew flower {tileValue} -> replacing");
+                
+                // Position flower
+                PositionFlowerTiles(seatIndex);
+                
+                // Draw replacement tile (recursive)
+                DrawTileToHand(seatIndex);
+            }
+        }
+        else
+        {
+            // Add normal tile to hand
             SyncList<uint> hand = GetHandForSeat(seatIndex);
             if (hand != null)
             {
                 hand.Add(netId);
             }
         }
-        else
+    }
+
+    /// <summary>
+    /// Check if a tile is a flower (601-604 or 701-704)
+    /// </summary>
+    private bool IsFlowerTile(int sortValue)
+    {
+        return (sortValue >= 601 && sortValue <= 604) || (sortValue >= 701 && sortValue <= 704);
+    }
+
+    /// <summary>
+    /// Get flower list for a seat
+    /// </summary>
+    private SyncList<uint> GetFlowersForSeat(int seat)
+    {
+        switch (seat)
         {
-            // Drawn slot empty, use it
-            SetDrawnTileForSeat(seatIndex, netId);
+            case 0: return seat0Flowers;
+            case 1: return seat1Flowers;
+            case 2: return seat2Flowers;
+            case 3: return seat3Flowers;
+            default: return null;
         }
     }
 
@@ -454,6 +562,56 @@ public class NetworkedGameManager : NetworkBehaviour
         }
     }
 
+    /// <summary>
+    /// Position flower tiles in a 2 row x 4 column grid
+    /// </summary>
+    [Server]
+    private void PositionFlowerTiles(int seat)
+    {
+        Transform container = GetHandContainer(seat);
+        if (container == null) return;
+        
+        SyncList<uint> flowers = GetFlowersForSeat(seat);
+        if (flowers == null) return;
+        
+        int flowerCount = flowers.Count;
+        if (flowerCount == 0) return;
+        
+        // Position flowers in 2x4 grid to the right of hand
+        // Each flower is 0.1 units wide and 0.15 units tall
+        float flowerWidth = 0.12f;
+        float flowerHeight = 0.16f;
+        float gridStartX = -0.64f + 13 * .12f + 0.05f; // Offset to right of hand
+        float gridStartY = 0.29f;
+        
+        for (int i = 0; i < flowerCount; i++)
+        {
+            uint netId = flowers[i];
+            if (spawnedTiles.TryGetValue(netId, out GameObject flowerObj))
+            {
+                int col = i % 4; // Column (0-3)
+                int row = i / 4; // Row (0-1)
+                
+                Vector3 localPos = new Vector3(
+                    gridStartX + col * flowerWidth,
+                    0f,
+                    row * - flowerHeight + gridStartY
+                );
+                
+                Vector3 worldPos = container.position + 
+                                 container.right * localPos.x + 
+                                 container.forward * localPos.z;
+                
+                flowerObj.transform.position = worldPos;
+                flowerObj.transform.rotation = container.rotation * Quaternion.Euler(0, 0, 0); // Face up
+                
+                RpcUpdateTileTransform(netId, worldPos, flowerObj.transform.rotation);
+            }
+        }
+        
+        Debug.Log($"[GameManager] Positioned {flowerCount} flowers for seat {seat}");
+    }
+
     [ClientRpc]
     private void RpcUpdateTileTransform(uint netId, Vector3 position, Quaternion rotation)
     {
@@ -545,6 +703,12 @@ public class NetworkedGameManager : NetworkBehaviour
         seat1Discards.Clear();
         seat2Discards.Clear();
         seat3Discards.Clear();
+        
+        // Clear flowers
+        seat0Flowers.Clear();
+        seat1Flowers.Clear();
+        seat2Flowers.Clear();
+        seat3Flowers.Clear();
     }
 
     /// <summary>
