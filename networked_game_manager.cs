@@ -605,7 +605,15 @@ public class NetworkedGameManager : NetworkBehaviour
                 flowerObj.transform.position = worldPos;
                 flowerObj.transform.rotation = container.rotation * Quaternion.Euler(0, 0, 0); // Face up
                 
+                // Disable collider so flower tiles cannot be clicked
+                Collider collider = flowerObj.GetComponent<Collider>();
+                if (collider != null)
+                {
+                    collider.enabled = false;
+                }
+                
                 RpcUpdateTileTransform(netId, worldPos, flowerObj.transform.rotation);
+                RpcDisableFlowerCollider(netId); // Disable on all clients too
             }
         }
         
@@ -620,6 +628,20 @@ public class NetworkedGameManager : NetworkBehaviour
         {
             identity.transform.position = position;
             identity.transform.rotation = rotation;
+        }
+    }
+
+    [ClientRpc]
+    private void RpcDisableFlowerCollider(uint netId)
+    {
+        // Disable collider on flower tiles so they can't be clicked
+        if (NetworkClient.spawned.TryGetValue(netId, out NetworkIdentity identity))
+        {
+            Collider collider = identity.GetComponent<Collider>();
+            if (collider != null)
+            {
+                collider.enabled = false;
+            }
         }
     }
 
@@ -888,8 +910,22 @@ public class NetworkedGameManager : NetworkBehaviour
     /// <summary>
     /// Check if a tile belongs to a specific seat's hand
     /// </summary>
+    /// <summary>
+    /// Check if a tile belongs to a specific seat's hand
+    /// Excludes flower tiles which are never clickable
+    /// </summary>
     public bool IsTileInSeatHand(int seat, uint netId)
     {
+        // First check if it's a flower tile - flowers are NEVER clickable
+        if (spawnedTiles.TryGetValue(netId, out GameObject tileObj))
+        {
+            TileData data = tileObj.GetComponent<TileData>();
+            if (data != null && IsFlowerTile(data.GetSortValue()))
+            {
+                return false; // Flower tiles cannot be clicked/discarded
+            }
+        }
+        
         SyncList<uint> hand = GetHandForSeat(seat);
         if (hand == null) return false;
         
