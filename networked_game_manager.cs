@@ -37,8 +37,53 @@ public class NetworkedGameManager : NetworkBehaviour
     [SerializeField] private int discardColumns = 6;
     [SerializeField] private Quaternion discardRotation = Quaternion.Euler(0f, 0f, 0f);
 
+    [Header("Meld/Kong Area Containers")]
+    [SerializeField] private Transform meldPositionSeat0;
+    [SerializeField] private Transform meldPositionSeat1;
+    [SerializeField] private Transform meldPositionSeat2;
+    [SerializeField] private Transform meldPositionSeat3;
+    
+    [Header("Kong Layout Settings")]
+    [SerializeField] private float meldTileSpacing = 0.12f;
+    [SerializeField] private float meldSetSpacing = 0.05f;
+
+    [Header("Player UI")]
+    [SerializeField] private GameObject kongButtonUI;
+
+    /// <summary>
+    /// Returns the Kong button scene object. NetworkedPlayerHand retrieves it from here
+    /// because NetworkedGameManager is a scene object and can hold scene references,
+    /// while the player prefab cannot.
+    /// </summary>
+    public GameObject KongButtonUI => kongButtonUI;
+
+    /// <summary>
+    /// Called directly by the Kong Button's OnClick event in the Canvas.
+    /// The button lives in the scene so it can reference this scene object (NetworkedGameManager),
+    /// but it cannot reference the player prefab. This method bridges the gap by finding
+    /// the local player's NetworkedPlayerHand and calling OnKongButtonPressed on it.
+    /// 
+    /// In Unity: select your Kong Button → Button component → OnClick (+) →
+    ///   drag the NetworkedGameManager GameObject into the slot →
+    ///   select NetworkedGameManager.OnKongButtonClicked
+    /// </summary>
+    public void OnKongButtonClicked()
+    {
+        if (NetworkClient.localPlayer == null) return;
+        // Use GetComponentInChildren in case NetworkedPlayerHand is on a child of the player root
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        if (hand != null)
+        {
+            hand.OnKongButtonPressed();
+        }
+        else
+        {
+            Debug.LogWarning("[GameManager] OnKongButtonClicked: could not find NetworkedPlayerHand on local player");
+        }
+    }
+
     // Game state
-    [SyncVar]
+    [SyncVar(hook = nameof(OnCurrentPlayerIndexChanged))]
     private int currentPlayerIndex = 0; // Whose turn it is (0-3)
     
     [SyncVar]
@@ -57,13 +102,16 @@ public class NetworkedGameManager : NetworkBehaviour
     private readonly SyncList<uint> seat3HandTiles = new SyncList<uint>();
     
     // Track drawn tiles (separate from hand)
-    [SyncVar]
+    // Hooks fire on ALL clients the moment the drawn tile SyncVar changes.
+    // This is the most reliable Kong-check trigger: it fires exactly when the tile
+    // arrives, with no ordering race against currentPlayerIndex.
+    [SyncVar(hook = nameof(OnSeat0DrawnTileChanged))]
     private uint seat0DrawnTile = 0;
-    [SyncVar]
+    [SyncVar(hook = nameof(OnSeat1DrawnTileChanged))]
     private uint seat1DrawnTile = 0;
-    [SyncVar]
+    [SyncVar(hook = nameof(OnSeat2DrawnTileChanged))]
     private uint seat2DrawnTile = 0;
-    [SyncVar]
+    [SyncVar(hook = nameof(OnSeat3DrawnTileChanged))]
     private uint seat3DrawnTile = 0;
     
     // Track discarded tiles for each seat
@@ -77,6 +125,10 @@ public class NetworkedGameManager : NetworkBehaviour
     private readonly SyncList<uint> seat1Flowers = new SyncList<uint>();
     private readonly SyncList<uint> seat2Flowers = new SyncList<uint>();
     private readonly SyncList<uint> seat3Flowers = new SyncList<uint>();
+    
+    // Track meld tiles (Kongs, Pons, Chis) spawned in the meld area for each seat
+    // These are stored as lists of netIds per meld set: each entry is a "set" of tiles
+    private Dictionary<int, List<List<uint>>> seatMeldSets = new Dictionary<int, List<List<uint>>>();
     
     // Player management
     private readonly NetworkPlayer[] players = new NetworkPlayer[4];
@@ -99,6 +151,12 @@ public class NetworkedGameManager : NetworkBehaviour
             return;
         }
         Instance = this;
+        
+        // Initialize meld sets tracking
+        for (int i = 0; i < 4; i++)
+        {
+            seatMeldSets[i] = new List<List<uint>>();
+        }
     }
 
     public override void OnStartServer()
@@ -172,6 +230,10 @@ public class NetworkedGameManager : NetworkBehaviour
         
         // Reposition dealer's hand with the drawn tile
         PositionHandTiles(dealerSeat);
+
+        // Notify all human seats to check for Kong opportunities in their starting hands.
+        // Done via coroutine to wait for tile spawn messages to reach clients first.
+        StartCoroutine(NotifySeatsAfterDeal());
         
         Debug.Log($"[GameManager] Round started. Dealer is seat {dealerSeat}, current turn: {currentPlayerIndex}");
     }
@@ -277,24 +339,68 @@ public class NetworkedGameManager : NetworkBehaviour
     [Server]
     private void DealInitialHands()
     {
-        Debug.Log("[GameManager] Dealing initial hands (13 tiles each)");
-        
-        // Deal 13 tiles to each seat - use DrawTileToHand to add to hand only
-        for (int round = 0; round < 13; round++)
-        {
-            for (int seat = 0; seat < 4; seat++)
-            {
-                DrawTileToHand(seat);
-            }
-        }
-        
-        // Sort and position all hands
+        Debug.Log("[GameManager] Dealing near-winning initial hands via HandGenerator");
+
         for (int seat = 0; seat < 4; seat++)
         {
+            // Generate a guaranteed 14-tile winning hand, then remove one tile so the
+            // seat starts with 13 tiles that are exactly one draw away from winning.
+            List<int> winningHand = HandGenerator.GenerateRandomWinningHandSortValues();
+            int waitingTile = HandGenerator.SelectOneTileToDiscard(winningHand);
+            // winningHand now has exactly 13 sort values — the near-winning starting hand.
+            List<int> startingHand = winningHand;
+
+            Debug.Log($"[GameManager] Seat {seat}: dealing {startingHand.Count} tiles, waiting for {waitingTile}");
+
+            SyncList<uint> hand = GetHandForSeat(seat);
+            if (hand == null)
+            {
+                Debug.LogError($"[GameManager] DealInitialHands: null hand list for seat {seat}");
+                continue;
+            }
+
+            // Spawn a networked tile object for each sort value and add it to the hand.
+            foreach (int sortValue in startingHand)
+            {
+                SpawnTileIntoHand(seat, sortValue);
+            }
+
+            // Sort and position the finished hand.
             SortHandForSeat(seat);
+
+            Debug.Log($"[GameManager] Seat {seat} ready: {hand.Count} tiles, waiting tile = {waitingTile}");
         }
-        
-        Debug.Log("[GameManager] Initial deal complete: all players have 13 sorted tiles in hand");
+
+        Debug.Log("[GameManager] Initial deal complete — all seats have 13-tile near-winning hands");
+    }
+
+    /// <summary>
+    /// Spawns a single networked tile with the given sort value and adds it directly to
+    /// the specified seat's hand list. Does NOT consume a tile from the wall.
+    /// Used during the pre-built HandGenerator deal so the wall remains intact for
+    /// normal turn-by-turn drawing.
+    /// </summary>
+    [Server]
+    private void SpawnTileIntoHand(int seat, int sortValue)
+    {
+        GameObject tilePrefab = GetTilePrefab(sortValue);
+        if (tilePrefab == null)
+        {
+            Debug.LogError($"[GameManager] SpawnTileIntoHand: no prefab found for sort value {sortValue} (seat {seat}). Skipping tile.");
+            return;
+        }
+
+        GameObject tileObj = Instantiate(tilePrefab, Vector3.zero, Quaternion.identity);
+        NetworkServer.Spawn(tileObj);
+
+        uint netId = tileObj.GetComponent<NetworkIdentity>().netId;
+        spawnedTiles[netId] = tileObj;
+
+        SyncList<uint> hand = GetHandForSeat(seat);
+        if (hand != null)
+        {
+            hand.Add(netId);
+        }
     }
 
     [Server]
@@ -456,7 +562,6 @@ public class NetworkedGameManager : NetworkBehaviour
         }
     }
 
-    [Server]
     private uint GetDrawnTileForSeat(int seat)
     {
         switch (seat)
@@ -645,7 +750,104 @@ public class NetworkedGameManager : NetworkBehaviour
         }
     }
 
-    [Server]
+    [ClientRpc]
+    private void RpcDisableTileCollider(uint netId)
+    {
+        // Disable collider on discarded tiles so they can't be clicked
+        if (NetworkClient.spawned.TryGetValue(netId, out NetworkIdentity identity))
+        {
+            Collider collider = identity.GetComponent<Collider>();
+            if (collider != null)
+                collider.enabled = false;
+        }
+    }
+
+    /// <summary>
+    /// Sends directly to the specific client whose turn it is.
+    /// Using TargetRpc eliminates all PlayerIndex-based filtering — the message
+    /// only arrives on exactly the right client, with no timing races.
+    /// </summary>
+    [TargetRpc]
+    private void TargetNotifyTileDrawn(NetworkConnection target)
+    {
+        if (NetworkClient.localPlayer == null) return;
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        hand?.OnTileDrawn();
+    }
+
+    [TargetRpc]
+    private void TargetNotifyTileDrawnDelayed(NetworkConnection target)
+    {
+        if (NetworkClient.localPlayer == null) return;
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        hand?.OnTileDrawnDelayed();
+    }
+
+    /// <summary>
+    /// Called on ALL clients after a Kong replacement tile is drawn.
+    /// Each client self-filters by comparing seatIndex to their own mySeatIndex.
+    /// Using ClientRpc here avoids TargetRpc routing which requires players[seat] to be set.
+    /// </summary>
+    [ClientRpc]
+    private void RpcNotifyKongReplacementDrawn(int seatIndex)
+    {
+        if (NetworkClient.localPlayer == null) return;
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        hand?.OnKongReplacementDrawn(seatIndex);
+    }
+
+    // Helper: get the NetworkConnection for a seat, or null if it's a bot or host
+    private NetworkConnection GetConnectionForSeat(int seat)
+    {
+        if (isBot[seat] || players[seat] == null) return null;
+        return players[seat].connectionToClient;
+    }
+
+    /// <summary>
+    /// Called on ALL clients automatically by Mirror whenever currentPlayerIndex changes.
+    /// This is the most reliable way to notify clients of a turn change — it uses Mirror's
+    /// own SyncVar machinery with zero custom routing or timing dependencies.
+    /// Each client checks if it is now the active player and runs the Kong check if so.
+    /// </summary>
+    private void OnCurrentPlayerIndexChanged(int oldIndex, int newIndex)
+    {
+        // Only care on clients (server handles its own flow via AdvanceTurn)
+        if (isServer) return;
+        if (NetworkClient.localPlayer == null) return;
+
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        if (hand == null) return;
+
+        // The hand component knows its own seat index — let it decide if it's now active
+        hand.OnTurnChanged(newIndex);
+    }
+
+    // ---- Drawn tile SyncVar hooks ----
+    // Each fires on all clients the moment that seat's drawn tile changes.
+    // We only act when the value becomes non-zero (tile arriving, not being cleared).
+    // This is the definitive signal that both the tile AND the turn update have landed
+    // because AdvanceTurn draws the tile first, then sets currentPlayerIndex — so by
+    // the time the drawn tile hook fires the turn index is already correct on the client.
+    private void OnSeat0DrawnTileChanged(uint oldVal, uint newVal) => OnDrawnTileArrived(0, newVal);
+    private void OnSeat1DrawnTileChanged(uint oldVal, uint newVal) => OnDrawnTileArrived(1, newVal);
+    private void OnSeat2DrawnTileChanged(uint oldVal, uint newVal) => OnDrawnTileArrived(2, newVal);
+    private void OnSeat3DrawnTileChanged(uint oldVal, uint newVal) => OnDrawnTileArrived(3, newVal);
+
+    private void OnDrawnTileArrived(int seat, uint newVal)
+    {
+        // Ignore clears (tile removed from drawn slot) and server-side calls
+        if (newVal == 0) return;
+        if (isServer) return;
+        if (NetworkClient.localPlayer == null) return;
+
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        if (hand == null) return;
+
+        // Tell the hand a tile just arrived for this seat — it self-filters by mySeatIndex
+        hand.OnDrawnTileArrived(seat);
+    }
+
+    // No [Server] — these just read SyncLists/SyncVars which are already replicated to all clients
     private SyncList<uint> GetHandForSeat(int seat)
     {
         switch (seat)
@@ -658,7 +860,6 @@ public class NetworkedGameManager : NetworkBehaviour
         }
     }
 
-    [Server]
     private SyncList<uint> GetDiscardsForSeat(int seat)
     {
         switch (seat)
@@ -731,6 +932,12 @@ public class NetworkedGameManager : NetworkBehaviour
         seat1Flowers.Clear();
         seat2Flowers.Clear();
         seat3Flowers.Clear();
+        
+        // Clear meld sets
+        for (int i = 0; i < 4; i++)
+        {
+            seatMeldSets[i].Clear();
+        }
     }
 
     /// <summary>
@@ -804,17 +1011,35 @@ public class NetworkedGameManager : NetworkBehaviour
         tileObj.transform.rotation = container.rotation * discardRotation;
         
         RpcUpdateTileTransform(netId, tileObj.transform.position, tileObj.transform.rotation);
+
+        // Disable collider so the discarded tile can no longer be clicked
+        Collider col2 = tileObj.GetComponent<Collider>();
+        if (col2 != null) col2.enabled = false;
+        RpcDisableTileCollider(netId);
     }
 
     [Server]
     private void AdvanceTurn()
     {
-        currentPlayerIndex = (currentPlayerIndex + 1) % 4;
-        Debug.Log($"[GameManager] Turn advanced to seat {currentPlayerIndex}");
+        int nextPlayer = (currentPlayerIndex + 1) % 4;
+        Debug.Log($"[GameManager] Turn advancing to seat {nextPlayer}");
         
-        // Draw tile for next player
-        DrawTileForSeat(currentPlayerIndex);
-        PositionHandTiles(currentPlayerIndex);
+        // Draw and position the tile BEFORE updating currentPlayerIndex.
+        // The SyncVar hook (OnCurrentPlayerIndexChanged) fires on clients when
+        // currentPlayerIndex changes — at that point the drawn tile must already
+        // be in the SyncList so CheckForKongOpportunity sees a complete 14-tile hand.
+        DrawTileForSeat(nextPlayer);
+        PositionHandTiles(nextPlayer);
+
+        // Now update the turn index — this triggers OnCurrentPlayerIndexChanged on all clients
+        currentPlayerIndex = nextPlayer;
+
+        // TargetRpc as a secondary path (e.g. for host whose SyncVar hook is skipped)
+        NetworkConnection conn = GetConnectionForSeat(currentPlayerIndex);
+        if (conn != null)
+            TargetNotifyTileDrawn(conn);
+        else if (!isBot[currentPlayerIndex])
+            TargetNotifyTileDrawn(null);
         
         // If it's a bot's turn, make them discard automatically
         if (isBot[currentPlayerIndex])
@@ -825,12 +1050,42 @@ public class NetworkedGameManager : NetworkBehaviour
 
     private System.Collections.IEnumerator BotDiscardAfterDelay(int seat)
     {
-        yield return new WaitForSeconds(1.5f); // Bot thinks for 1.5 seconds
+        yield return new WaitForSeconds(0f); // Bot thinks for 1.5 seconds
         
         if (currentPlayerIndex == seat) // Make sure it's still this bot's turn
         {
             BotDiscard(seat);
         }
+    }
+
+    /// <summary>
+    /// Waits for all tile spawn messages from the initial deal to reach clients,
+    /// then notifies the dealer's client to check for a Kong opportunity.
+    /// Only the dealer (current player) can act on a Kong at round start.
+    /// Non-dealer seats will get their notification when their turn begins via AdvanceTurn.
+    /// </summary>
+    private System.Collections.IEnumerator NotifySeatsAfterDeal()
+    {
+        yield return new WaitForSeconds(0.5f);
+
+        if (!isBot[dealerSeat])
+        {
+            NetworkConnection conn = GetConnectionForSeat(dealerSeat);
+            if (conn != null)
+                TargetNotifyTileDrawnDelayed(conn);
+            else
+                TargetNotifyTileDrawnDelayed(null); // host
+        }
+    }
+
+    // Called only at round start where 50+ tile spawns need time to propagate.
+    // Kept for compatibility — now routed via TargetNotifyTileDrawnDelayed.
+    [ClientRpc]
+    private void RpcNotifyTileDrawnDelayed(int seatIndex)
+    {
+        if (NetworkClient.localPlayer == null) return;
+        NetworkedPlayerHand hand = NetworkClient.localPlayer.GetComponentInChildren<NetworkedPlayerHand>();
+        hand?.OnTileDrawnDelayed();
     }
 
     [Server]
@@ -877,6 +1132,259 @@ public class NetworkedGameManager : NetworkBehaviour
         DiscardTile(seatIndex, tileNetId);
     }
 
+    // ========== KONG (SELF-DRAWN) FUNCTIONALITY ==========
+
+    /// <summary>
+    /// Called from NetworkedPlayerHand when a player declares a self-drawn Kong.
+    /// Only valid on the player's own turn.
+    /// </summary>
+    [Command(requiresAuthority = false)]
+    public void CmdDeclareKong(int sortValue, NetworkConnectionToClient sender = null)
+    {
+        // Identify the seat
+        int seatIndex = -1;
+        for (int i = 0; i < 4; i++)
+        {
+            if (players[i] != null && players[i].connectionToClient == sender)
+            {
+                seatIndex = i;
+                break;
+            }
+        }
+
+        if (seatIndex == -1)
+        {
+            Debug.LogError("[GameManager] CmdDeclareKong: Could not find seat for player");
+            return;
+        }
+
+        if (currentPlayerIndex != seatIndex)
+        {
+            Debug.LogWarning($"[GameManager] Seat {seatIndex} tried to Kong but it's seat {currentPlayerIndex}'s turn");
+            return;
+        }
+
+        // Validate: player must have 4 tiles of this value in hand (including drawn tile)
+        SyncList<uint> hand = GetHandForSeat(seatIndex);
+        uint drawnNetId = GetDrawnTileForSeat(seatIndex);
+
+        List<uint> matchingNetIds = new List<uint>();
+
+        foreach (uint netId in hand)
+        {
+            if (spawnedTiles.TryGetValue(netId, out GameObject tileObj))
+            {
+                TileData data = tileObj.GetComponent<TileData>();
+                if (data != null && data.GetSortValue() == sortValue)
+                {
+                    matchingNetIds.Add(netId);
+                }
+            }
+        }
+
+        // Check drawn tile too
+        if (drawnNetId != 0 && spawnedTiles.TryGetValue(drawnNetId, out GameObject drawnObj))
+        {
+            TileData drawnData = drawnObj.GetComponent<TileData>();
+            if (drawnData != null && drawnData.GetSortValue() == sortValue)
+            {
+                matchingNetIds.Add(drawnNetId);
+            }
+        }
+
+        if (matchingNetIds.Count < 4)
+        {
+            Debug.LogWarning($"[GameManager] Seat {seatIndex} tried to Kong {sortValue} but only has {matchingNetIds.Count} copies");
+            return;
+        }
+
+        // Take exactly 4 tiles
+        List<uint> kongNetIds = matchingNetIds.Take(4).ToList();
+
+        // If the drawn tile exists but is NOT one of the kong tiles, merge it into the
+        // hand now. Without this, the drawn tile slot gets overwritten by the replacement
+        // tile but the old drawn tile GameObject stays in the scene at the drawn position,
+        // causing two tiles to visually overlap there.
+        if (drawnNetId != 0 && !kongNetIds.Contains(drawnNetId))
+        {
+            hand.Add(drawnNetId);
+            SetDrawnTileForSeat(seatIndex, 0);
+            Debug.Log($"[GameManager] Merged non-kong drawn tile {drawnNetId} into hand before Kong");
+        }
+
+        // Remove from hand and drawn slot
+        foreach (uint netId in kongNetIds)
+        {
+            if (hand.Contains(netId))
+            {
+                hand.Remove(netId);
+            }
+            else if (GetDrawnTileForSeat(seatIndex) == netId)
+            {
+                SetDrawnTileForSeat(seatIndex, 0);
+            }
+        }
+
+        // Track the meld set server-side
+        seatMeldSets[seatIndex].Add(new List<uint>(kongNetIds));
+        int meldSetIndex = seatMeldSets[seatIndex].Count - 1;
+
+        // Broadcast to ALL clients: position and show the Kong meld
+        // Local player (kong declarer) sees face-up; others see face-down (middle 2 flipped)
+        RpcShowKongMeld(seatIndex, sortValue, kongNetIds, meldSetIndex);
+
+        // Sort and reposition remaining hand
+        SortHandForSeat(seatIndex);
+        PositionHandTiles(seatIndex);
+
+        // Draw a replacement tile for the player
+        DrawTileForSeat(seatIndex);
+        PositionHandTiles(seatIndex);
+
+        // Broadcast to all clients — each client's OnKongReplacementDrawn self-filters
+        // by seat index. Using ClientRpc here avoids relying on players[seatIndex].connectionToClient
+        // which may be null if player registration was incomplete.
+        RpcNotifyKongReplacementDrawn(seatIndex);
+
+        Debug.Log($"[GameManager] Seat {seatIndex} successfully declared Kong of {sortValue}, drew replacement tile");
+    }
+
+    /// <summary>
+    /// Tell all clients to display a Kong meld for the given seat.
+    /// The declaring player sees tiles face-up; opponents see the middle two tiles face-down
+    /// (standard concealed Kong display).
+    /// </summary>
+    [ClientRpc]
+    private void RpcShowKongMeld(int declaringSeat, int sortValue, List<uint> kongNetIds, int meldSetIndex)
+    {
+        Debug.Log($"[GameManager] RpcShowKongMeld: Seat {declaringSeat} declared Kong of {sortValue}, meld set {meldSetIndex}");
+
+        // Determine if the local client is the declaring player
+        NetworkPlayer localPlayer = NetworkClient.localPlayer?.GetComponent<NetworkPlayer>();
+        bool isDeclaringPlayer = (localPlayer != null && localPlayer.PlayerIndex == declaringSeat);
+
+        // Find the meld container for this seat
+        Transform meldContainer = GetMeldContainer(declaringSeat);
+        if (meldContainer == null)
+        {
+            Debug.LogError($"[GameManager] No meld container found for seat {declaringSeat}! Assign MeldPosition_Seat{declaringSeat} in inspector.");
+            return;
+        }
+
+        // Calculate position offset for this meld set (based on prior melds)
+        // We need to count existing children to find the offset
+        float tileSpacing = meldTileSpacing;
+        float setSpacing = meldSetSpacing;
+        float directionMultiplier = (declaringSeat == 0) ? 1f : -1f;
+
+        // Count total tiles already in the meld container to find offset
+        float meldStartX = CalculateMeldStartX(meldContainer, meldSetIndex, tileSpacing, setSpacing, directionMultiplier);
+
+        // Rotations
+        Quaternion faceUpRotation = (declaringSeat == 0) ? Quaternion.identity : Quaternion.Euler(0f, 180f, 0f);
+        Quaternion faceDownRotation;
+        if (declaringSeat == 0)
+        {
+            faceDownRotation = Quaternion.Euler(180f, 0f, 0f); // Flip upside down
+        }
+        else
+        {
+            faceDownRotation = Quaternion.Euler(180f, 180f, 0f);
+        }
+
+        // Position each Kong tile
+        for (int i = 0; i < kongNetIds.Count && i < 4; i++)
+        {
+            uint netId = kongNetIds[i];
+
+            if (!NetworkClient.spawned.TryGetValue(netId, out NetworkIdentity identity))
+            {
+                Debug.LogWarning($"[GameManager] Could not find spawned tile with netId {netId}");
+                continue;
+            }
+
+            GameObject tileObj = identity.gameObject;
+            tileObj.transform.SetParent(meldContainer, false);
+
+            float xPos = meldStartX + (directionMultiplier * i * tileSpacing);
+            tileObj.transform.localPosition = new Vector3(xPos, 0f, 0f);
+
+            // Self-drawn Kong display rules:
+            // - Declaring player: all 4 face-up
+            // - Opponent viewers: tiles 0 and 3 (outer) face-up, tiles 1 and 2 (inner) face-down
+            bool showFaceUp;
+            if (isDeclaringPlayer)
+            {
+                showFaceUp = true;
+            }
+            else
+            {
+                showFaceUp = (i == 99 || i == 999); // Only outer tiles face-up for opponents
+            }
+
+            tileObj.transform.localRotation = showFaceUp ? faceUpRotation : faceDownRotation;
+
+            // Disable collider — meld tiles are not clickable
+            Collider col = tileObj.GetComponent<Collider>();
+            if (col != null) col.enabled = false;
+        }
+
+        Debug.Log($"[GameManager] Kong meld displayed for seat {declaringSeat} (face-up: {isDeclaringPlayer})");
+    }
+
+    /// <summary>
+    /// Calculate the X starting position for a new meld set based on existing meld content.
+    /// Uses child count of the meld container grouped in sets of 4.
+    /// </summary>
+    private float CalculateMeldStartX(Transform meldContainer, int meldSetIndex, float tileSpacing, float setSpacing, float directionMultiplier)
+    {
+        // Count how many tiles (children) already exist before this new set
+        // Each set has exactly 4 tiles, so the offset is meldSetIndex * (4 * tileSpacing + setSpacing)
+        float startX = 0f;
+        for (int i = 0; i < meldSetIndex; i++)
+        {
+            startX += directionMultiplier * (4 * tileSpacing + setSpacing);
+        }
+        return startX;
+    }
+
+    /// <summary>
+    /// Get the meld/kong area container for a seat.
+    /// Falls back to searching the scene for "KongArea_Seat{n}" if not assigned.
+    /// </summary>
+    private Transform GetMeldContainer(int seat)
+    {
+        // First try the directly assigned references
+        Transform direct = null;
+        switch (seat)
+        {
+            case 0: direct = meldPositionSeat0; break;
+            case 1: direct = meldPositionSeat1; break;
+            case 2: direct = meldPositionSeat2; break;
+            case 3: direct = meldPositionSeat3; break;
+        }
+        if (direct != null) return direct;
+
+        // Fallback: search by name (supports legacy "KongArea_Seat{n}" naming)
+        GameObject found = GameObject.Find($"KongArea_Seat{seat}");
+        if (found != null) return found.transform;
+
+        found = GameObject.Find($"MeldPosition_Seat{seat}");
+        if (found != null) return found.transform;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns all meld sets (Kong/Pon/Chi) tracked for a seat (server-side list of netId groups).
+    /// </summary>
+    public List<List<uint>> GetMeldSetsForSeat(int seat)
+    {
+        if (seatMeldSets.TryGetValue(seat, out List<List<uint>> sets))
+            return sets;
+        return new List<List<uint>>();
+    }
+
     /// <summary>
     /// Get the seat index for a specific player
     /// </summary>
@@ -917,7 +1425,8 @@ public class NetworkedGameManager : NetworkBehaviour
     public bool IsTileInSeatHand(int seat, uint netId)
     {
         // First check if it's a flower tile - flowers are NEVER clickable
-        if (spawnedTiles.TryGetValue(netId, out GameObject tileObj))
+        GameObject tileObj = FindTileObject(netId);
+        if (tileObj != null)
         {
             TileData data = tileObj.GetComponent<TileData>();
             if (data != null && IsFlowerTile(data.GetSortValue()))
@@ -933,7 +1442,8 @@ public class NetworkedGameManager : NetworkBehaviour
     }
 
     /// <summary>
-    /// Get all tiles in a seat's hand (returns TileData components)
+    /// Get all tiles in a seat's hand (returns TileData components).
+    /// Works on both server (uses spawnedTiles) and clients (uses NetworkClient.spawned).
     /// </summary>
     public List<TileData> GetTilesForSeat(int seat)
     {
@@ -941,31 +1451,46 @@ public class NetworkedGameManager : NetworkBehaviour
         
         SyncList<uint> hand = GetHandForSeat(seat);
         if (hand == null) return result;
-        
+
         foreach (uint netId in hand)
         {
-            if (spawnedTiles.TryGetValue(netId, out GameObject tileObj))
+            GameObject tileObj = FindTileObject(netId);
+            if (tileObj != null)
             {
                 TileData data = tileObj.GetComponent<TileData>();
-                if (data != null)
-                {
-                    result.Add(data);
-                }
+                if (data != null) result.Add(data);
             }
         }
         
         // Add drawn tile
         uint drawnNetId = GetDrawnTileForSeat(seat);
-        if (drawnNetId != 0 && spawnedTiles.TryGetValue(drawnNetId, out GameObject drawnObj))
+        if (drawnNetId != 0)
         {
-            TileData data = drawnObj.GetComponent<TileData>();
-            if (data != null)
+            GameObject drawnObj = FindTileObject(drawnNetId);
+            if (drawnObj != null)
             {
-                result.Add(data);
+                TileData data = drawnObj.GetComponent<TileData>();
+                if (data != null) result.Add(data);
             }
         }
         
         return result;
+    }
+
+    /// <summary>
+    /// Finds a spawned tile GameObject by netId on both server and client.
+    /// </summary>
+    private GameObject FindTileObject(uint netId)
+    {
+        // Server path
+        if (isServer && spawnedTiles.TryGetValue(netId, out GameObject serverObj))
+            return serverObj;
+
+        // Client path — use Mirror's spawned object registry
+        if (NetworkClient.spawned.TryGetValue(netId, out NetworkIdentity identity))
+            return identity.gameObject;
+
+        return null;
     }
 
     /// <summary>
